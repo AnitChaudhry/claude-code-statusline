@@ -18,7 +18,7 @@ A rich, customizable statusline for Claude Code with colored legends, context pr
 | Model   | Purple           | Active model name and version |
 | GitHub  | White            | username/repo/branch with +~ dirty indicators |
 | Skill   | Pink             | Last tool used (Read, Write, Edit, Terminal, etc.) |
-| Dir     | Cyan             | Last 2 segments of working directory |
+| Dir     | Cyan             | Last 3 segments of working directory |
 | Tokens  | Yellow           | Input + Output = Total (e.g., 25k + 12k = 37k) |
 | Cost    | Green            | Session cost in USD |
 | Context | White/Orange/Red | 40-char progress bar (white ≤40%, orange 41-75%, red >75%) |
