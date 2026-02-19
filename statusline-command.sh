@@ -150,18 +150,19 @@ skill_label="Idle"
 tpath=""
 
 # Find the most recent transcript from ~/.claude/projects/<hash>/*.jsonl
+# Walks up parent directories if exact match not found (handles subfolders)
 if [ -n "$clean_cwd" ]; then
-  # Build project hash: C:/Users/X → C--Users-X (Claude Code convention)
-  proj_hash=$(echo "$clean_cwd" | sed 's|^/\([a-zA-Z]\)/|\U\1--|; s|^[A-Z]:/|&|; s|:/|--|; s|/|-|g')
-  proj_dir="$HOME/.claude/projects/${proj_hash}"
-  if [ ! -d "$proj_dir" ]; then
-    # Fallback: try without drive letter transform
-    proj_hash=$(echo "$clean_cwd" | sed 's|^/||; s|/|-|g')
+  search_path="$clean_cwd"
+  while [ -n "$search_path" ] && [ "$search_path" != "/" ]; do
+    proj_hash=$(echo "$search_path" | sed 's|^/\([a-zA-Z]\)/|\U\1--|; s|^[A-Z]:/|&|; s|:/|--|; s|/|-|g')
     proj_dir="$HOME/.claude/projects/${proj_hash}"
-  fi
-  if [ -d "$proj_dir" ]; then
-    tpath=$(ls -t "$proj_dir"/*.jsonl 2>/dev/null | head -1)
-  fi
+    if [ -d "$proj_dir" ]; then
+      tpath=$(ls -t "$proj_dir"/*.jsonl 2>/dev/null | head -1)
+      [ -n "$tpath" ] && break
+    fi
+    # Go up one directory
+    search_path=$(echo "$search_path" | sed 's|/[^/]*$||')
+  done
 fi
 
 if [ -n "$tpath" ] && [ -f "$tpath" ]; then
