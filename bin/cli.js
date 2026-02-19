@@ -9,7 +9,7 @@ const readline = require('readline');
 const args = process.argv.slice(2);
 const command = args[0];
 const subcommand = args[1];
-const VERSION = '2.0.0';
+const VERSION = '2.1.0';
 
 const PKG_DIR = path.resolve(__dirname, '..');
 const HOME = os.homedir();
@@ -19,8 +19,15 @@ const CONFIG_PATH = path.join(CLAUDE_DIR, 'statusline-config.json');
 const SETTINGS_PATH = path.join(CLAUDE_DIR, 'settings.json');
 const SCRIPT_DEST = path.join(CLAUDE_DIR, 'statusline-command.sh');
 
+const CLAUDE_MD_PATH = path.join(CLAUDE_DIR, 'CLAUDE.md');
+const COMMANDS_DIR = path.join(CLAUDE_DIR, 'commands');
 const THEMES = ['default', 'nord', 'tokyo-night', 'catppuccin', 'gruvbox'];
 const LAYOUTS = ['compact', 'standard', 'full'];
+const SLS_COMMANDS = ['sls-theme', 'sls-layout', 'sls-preview', 'sls-config', 'sls-doctor', 'sls-help'];
+
+// Marker for our managed section in CLAUDE.md
+const CLAUDE_MD_START = '<!-- skill-statusline:start -->';
+const CLAUDE_MD_END = '<!-- skill-statusline:end -->';
 
 // Terminal colors
 const R = '\x1b[0m';
@@ -96,6 +103,129 @@ function readSettings() {
 
 function writeSettings(settings) {
   fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n');
+}
+
+// ── CLAUDE.md management ──
+// Adds instructions to ~/.claude/CLAUDE.md so Claude Code knows to use ccsl
+// instead of the built-in statusline-setup agent (which fails on Windows
+// and conflicts with our setup).
+
+const CLAUDE_MD_SECTION = `${CLAUDE_MD_START}
+## Statusline — Managed by skill-statusline v2
+
+The Claude Code statusline is fully configured and managed by the \`skill-statusline\` npm package. Do NOT use the built-in \`statusline-setup\` agent for any statusline configuration — it is not compatible with this setup.
+
+### How It Works
+- \`~/.claude/settings.json\` → points to \`bash ~/.claude/statusline-command.sh\`
+- \`~/.claude/statusline-command.sh\` → entry point, delegates to v2 engine
+- \`~/.claude/statusline/core.sh\` → v2 engine (themes, layouts, accurate context tracking)
+- \`~/.claude/statusline-config.json\` → user preferences (theme, layout, options)
+
+### When the user asks about statusline configuration, use these CLI commands:
+
+| Action | Command |
+|--------|---------|
+| Change theme | \`ccsl theme set <name>\` |
+| Change layout | \`ccsl layout set <name>\` |
+| List themes | \`ccsl theme\` |
+| List layouts | \`ccsl layout\` |
+| Preview | \`ccsl preview\` |
+| Preview with overrides | \`ccsl preview --theme <name> --layout <name>\` |
+| Show config | \`ccsl config\` |
+| Set config option | \`ccsl config set <key> <value>\` |
+| Diagnostics | \`ccsl doctor\` |
+| Update scripts | \`ccsl update\` |
+| Reinstall | \`ccsl install\` |
+| Uninstall | \`ccsl uninstall\` |
+
+**Available themes:** default, nord, tokyo-night, catppuccin, gruvbox
+**Available layouts:** compact (2 rows), standard (4 rows), full (6 rows)
+**Config options:** compaction_warning_threshold, bar_width, cache_ttl_seconds, show_burn_rate, show_vim_mode, show_agent_name
+
+### Slash Commands (installed in ~/.claude/commands/)
+
+Users can also use these slash commands inside Claude Code:
+- \`/sls-theme [name]\` — List or set theme
+- \`/sls-layout [name]\` — List or set layout
+- \`/sls-preview [theme] [layout]\` — Preview with sample data
+- \`/sls-config [key] [value]\` — Show or set config options
+- \`/sls-doctor\` — Run diagnostics
+- \`/sls-help\` — Show all commands
+
+### IMPORTANT
+- NEVER spawn the \`statusline-setup\` agent — it will fail on Windows and conflict with this setup
+- All statusline changes are made via \`ccsl\` CLI commands (run in terminal) or \`/sls-*\` slash commands
+- Changes take effect on next Claude Code restart (or next statusline refresh for config changes)
+${CLAUDE_MD_END}`;
+
+function installClaudeMd() {
+  let content = '';
+  if (fs.existsSync(CLAUDE_MD_PATH)) {
+    content = fs.readFileSync(CLAUDE_MD_PATH, 'utf8');
+    // Remove existing section if present
+    const startIdx = content.indexOf(CLAUDE_MD_START);
+    const endIdx = content.indexOf(CLAUDE_MD_END);
+    if (startIdx !== -1 && endIdx !== -1) {
+      content = content.substring(0, startIdx) + content.substring(endIdx + CLAUDE_MD_END.length);
+      content = content.replace(/\n{3,}/g, '\n\n').trim();
+    }
+  }
+  // Append our section
+  content = content ? content + '\n\n' + CLAUDE_MD_SECTION + '\n' : CLAUDE_MD_SECTION + '\n';
+  fs.writeFileSync(CLAUDE_MD_PATH, content);
+}
+
+function uninstallClaudeMd() {
+  if (!fs.existsSync(CLAUDE_MD_PATH)) return false;
+  let content = fs.readFileSync(CLAUDE_MD_PATH, 'utf8');
+  const startIdx = content.indexOf(CLAUDE_MD_START);
+  const endIdx = content.indexOf(CLAUDE_MD_END);
+  if (startIdx === -1 || endIdx === -1) return false;
+  content = content.substring(0, startIdx) + content.substring(endIdx + CLAUDE_MD_END.length);
+  content = content.replace(/\n{3,}/g, '\n\n').trim();
+  if (content) {
+    fs.writeFileSync(CLAUDE_MD_PATH, content + '\n');
+  } else {
+    // File is empty after removing our section — delete it
+    fs.unlinkSync(CLAUDE_MD_PATH);
+  }
+  return true;
+}
+
+// ── Slash commands management ──
+
+function installCommands() {
+  ensureDir(COMMANDS_DIR);
+  const cmdSrc = path.join(PKG_DIR, 'commands');
+  if (!fs.existsSync(cmdSrc)) return 0;
+  let count = 0;
+  for (const cmd of SLS_COMMANDS) {
+    const src = path.join(cmdSrc, `${cmd}.md`);
+    const dest = path.join(COMMANDS_DIR, `${cmd}.md`);
+    if (fs.existsSync(src)) {
+      fs.copyFileSync(src, dest);
+      count++;
+    }
+  }
+  return count;
+}
+
+function uninstallCommands() {
+  let count = 0;
+  for (const cmd of SLS_COMMANDS) {
+    const f = path.join(COMMANDS_DIR, `${cmd}.md`);
+    if (fs.existsSync(f)) {
+      fs.unlinkSync(f);
+      count++;
+    }
+  }
+  // Remove commands dir if empty and we created it
+  try {
+    if (fs.existsSync(COMMANDS_DIR) && fs.readdirSync(COMMANDS_DIR).length === 0) {
+      fs.rmdirSync(COMMANDS_DIR);
+    }
+  } catch (e) {}
+  return count;
 }
 
 // ── File copy helpers ──
@@ -235,6 +365,16 @@ async function install() {
     success(`statusLine already configured in settings.json`);
   }
 
+  // Add CLAUDE.md instructions (prevents built-in statusline-setup agent)
+  installClaudeMd();
+  success(`CLAUDE.md updated (statusline agent redirect)`);
+
+  // Install slash commands to ~/.claude/commands/
+  const cmdCount = installCommands();
+  if (cmdCount > 0) {
+    success(`${B}${cmdCount} slash commands${R} installed (/sls-theme, /sls-layout, ...)`);
+  }
+
   divider();
   blank();
   log(`  ${GRAY}\u2502${R}   ${GRN}${B}Ready.${R} Restart Claude Code to see the statusline.`);
@@ -311,6 +451,17 @@ function uninstall() {
     }
   }
 
+  // Remove CLAUDE.md section
+  if (uninstallClaudeMd()) {
+    success(`Removed statusline section from CLAUDE.md`);
+  }
+
+  // Remove slash commands
+  const cmdRemoved = uninstallCommands();
+  if (cmdRemoved > 0) {
+    success(`Removed ${cmdRemoved} slash commands`);
+  }
+
   blank();
   log(`  ${GRAY}\u2502${R}   ${GRN}${B}Done.${R} Restart Claude Code to apply.`);
 
@@ -328,6 +479,16 @@ function update() {
 
   const config = readConfig();
   success(`Config preserved: theme=${CYN}${config.theme}${R}, layout=${CYN}${config.layout}${R}`);
+
+  // Refresh CLAUDE.md instructions
+  installClaudeMd();
+  success(`CLAUDE.md refreshed`);
+
+  // Refresh slash commands
+  const cmdCount = installCommands();
+  if (cmdCount > 0) {
+    success(`${cmdCount} slash commands refreshed`);
+  }
 
   blank();
   log(`  ${GRAY}\u2502${R}   ${GRN}${B}Done.${R} Restart Claude Code to apply.`);
@@ -603,7 +764,38 @@ function doctor() {
     warn(`v2 engine not installed (running v1 fallback)`);
   }
 
-  // 6. Config file
+  // 6. CLAUDE.md agent redirect
+  if (fs.existsSync(CLAUDE_MD_PATH)) {
+    const mdContent = fs.readFileSync(CLAUDE_MD_PATH, 'utf8');
+    if (mdContent.includes(CLAUDE_MD_START)) {
+      success(`CLAUDE.md has statusline agent redirect`);
+    } else {
+      warn(`CLAUDE.md exists but missing statusline section`);
+      info(`Run ${CYN}ccsl install${R} or ${CYN}ccsl update${R} to add it`);
+    }
+  } else {
+    warn(`No ~/.claude/CLAUDE.md (built-in statusline agent may interfere)`);
+    info(`Run ${CYN}ccsl install${R} or ${CYN}ccsl update${R} to fix`);
+  }
+
+  // 7. Slash commands
+  if (fs.existsSync(COMMANDS_DIR)) {
+    const installed = SLS_COMMANDS.filter(c => fs.existsSync(path.join(COMMANDS_DIR, `${c}.md`)));
+    if (installed.length === SLS_COMMANDS.length) {
+      success(`All ${SLS_COMMANDS.length} slash commands installed`);
+    } else if (installed.length > 0) {
+      warn(`${installed.length}/${SLS_COMMANDS.length} slash commands installed`);
+      info(`Run ${CYN}ccsl update${R} to install missing commands`);
+    } else {
+      warn(`No slash commands found in ~/.claude/commands/`);
+      info(`Run ${CYN}ccsl install${R} or ${CYN}ccsl update${R} to add them`);
+    }
+  } else {
+    warn(`~/.claude/commands/ not found (slash commands not installed)`);
+    info(`Run ${CYN}ccsl install${R} or ${CYN}ccsl update${R} to add them`);
+  }
+
+  // 8. Config file
   if (fs.existsSync(CONFIG_PATH)) {
     try {
       JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
@@ -616,7 +808,7 @@ function doctor() {
     warn(`No config file (using defaults)`);
   }
 
-  // 7. Performance benchmark
+  // 9. Performance benchmark
   blank();
   info(`${B}Performance benchmark${R}`);
   blank();
@@ -676,6 +868,15 @@ function showHelp() {
   log(`  ${GRAY}\u2502${R}      ${CYN}ccsl config set k v${R}     Set config option`);
   log(`  ${GRAY}\u2502${R}      ${CYN}ccsl doctor${R}             Run diagnostics`);
   log(`  ${GRAY}\u2502${R}      ${CYN}ccsl version${R}            Show version`);
+  blank();
+  log(`  ${GRAY}\u2502${R}   ${WHT}${B}Slash Commands${R} ${D}(inside Claude Code):${R}`);
+  blank();
+  log(`  ${GRAY}\u2502${R}      ${PINK}/sls-theme${R}              List or set theme`);
+  log(`  ${GRAY}\u2502${R}      ${PINK}/sls-layout${R}             List or set layout`);
+  log(`  ${GRAY}\u2502${R}      ${PINK}/sls-preview${R}            Preview with sample data`);
+  log(`  ${GRAY}\u2502${R}      ${PINK}/sls-config${R}             Show or set config options`);
+  log(`  ${GRAY}\u2502${R}      ${PINK}/sls-doctor${R}             Run diagnostics`);
+  log(`  ${GRAY}\u2502${R}      ${PINK}/sls-help${R}               Show all commands`);
   blank();
   log(`  ${GRAY}\u2502${R}   ${WHT}${B}Themes:${R} ${THEMES.join(', ')}`);
   log(`  ${GRAY}\u2502${R}   ${WHT}${B}Layouts:${R} ${LAYOUTS.join(', ')}`);
