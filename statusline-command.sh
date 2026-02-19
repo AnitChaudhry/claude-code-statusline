@@ -54,7 +54,7 @@ if [ -z "$cwd" ]; then
   clean_cwd=""
 else
   clean_cwd=$(to_fwd "$cwd")
-  dir_label=$(echo "$clean_cwd" | awk -F'/' '{if(NF>2) print $(NF-1)"/"$NF; else print $0}')
+  dir_label=$(echo "$clean_cwd" | awk -F'/' '{if(NF>3) print $(NF-2)"/"$(NF-1)"/"$NF; else if(NF>2) print $(NF-1)"/"$NF; else print $0}')
   [ -z "$dir_label" ] && dir_label="~"
 fi
 
