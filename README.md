@@ -14,13 +14,13 @@ A rich, customizable statusline for Claude Code with colored legends, context pr
 ## Install
 
 ```bash
-npx claude-code-statusline install
+npx skill-statusline install
 ```
 
 Or install globally:
 
 ```bash
-npm install -g claude-code-statusline
+npm install -g skill-statusline
 ccsl install
 ```
 

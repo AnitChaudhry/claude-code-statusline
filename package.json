@@ -1,9 +1,9 @@
 {
-  "name": "claude-code-statusline",
+  "name": "skill-statusline",
   "version": "1.0.0",
   "description": "Rich, customizable statusline for Claude Code — model, tokens, cost, context bar, GitHub info, and active skill display.",
   "bin": {
-    "claude-code-statusline": "bin/cli.js",
+    "skill-statusline": "bin/cli.js",
     "ccsl": "bin/cli.js"
   },
   "files": [

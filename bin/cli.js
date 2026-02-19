@@ -35,7 +35,7 @@ function header() {
   log('');
   log(`  ${GRAY}\u250C${''.padEnd(58, '\u2500')}\u2510${R}`);
   log(`  ${GRAY}\u2502${R}                                                          ${GRAY}\u2502${R}`);
-  log(`  ${GRAY}\u2502${R}   ${PURPLE}${B}\u2588\u2588\u2588${R} ${PINK}${B}\u2588\u2588\u2588${R}  ${WHT}${B}claude-code-statusline${R}  ${D}v${VERSION}${R}          ${GRAY}\u2502${R}`);
+  log(`  ${GRAY}\u2502${R}   ${PURPLE}${B}\u2588\u2588\u2588${R} ${PINK}${B}\u2588\u2588\u2588${R}  ${WHT}${B}skill-statusline${R}  ${D}v${VERSION}${R}          ${GRAY}\u2502${R}`);
   log(`  ${GRAY}\u2502${R}   ${PURPLE}\u2588${R} ${PINK}\u2588${R} ${PURPLE}\u2588${R}  ${D}Rich statusline for Claude Code${R}           ${GRAY}\u2502${R}`);
   log(`  ${GRAY}\u2502${R}   ${PURPLE}${B}\u2588\u2588\u2588${R} ${PINK}${B}\u2588\u2588\u2588${R}                                           ${GRAY}\u2502${R}`);
   log(`  ${GRAY}\u2502${R}                                                          ${GRAY}\u2502${R}`);
@@ -99,7 +99,7 @@ function install() {
   bar(`${R}${D}Settings:${R}  ${CYN}~/.claude/settings.json${R}`);
   blank();
   bar(`Docs     ${R}${TEAL}https://skills.thinqmesh.com${R}`);
-  bar(`GitHub   ${R}${PURPLE}https://github.com/AnitChaudhry/claude-code-statusline${R}`);
+  bar(`GitHub   ${R}${PURPLE}https://github.com/AnitChaudhry/skill-statusline${R}`);
 
   footer();
 }
@@ -163,10 +163,10 @@ function showHelp() {
   blank();
   log(`  ${GRAY}\u2502${R}   ${WHT}${B}Quick install:${R}`);
   blank();
-  log(`  ${GRAY}\u2502${R}      ${CYN}npx claude-code-statusline install${R}`);
+  log(`  ${GRAY}\u2502${R}      ${CYN}npx skill-statusline install${R}`);
   blank();
   bar(`Docs     ${R}${TEAL}https://skills.thinqmesh.com${R}`);
-  bar(`GitHub   ${R}${PURPLE}https://github.com/AnitChaudhry/claude-code-statusline${R}`);
+  bar(`GitHub   ${R}${PURPLE}https://github.com/AnitChaudhry/skill-statusline${R}`);
 
   footer();
 }
