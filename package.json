@@ -1,16 +1,22 @@
 {
   "name": "skill-statusline",
-  "version": "1.0.0",
-  "description": "Rich, customizable statusline for Claude Code — model, tokens, cost, context bar, GitHub info, and active skill display.",
+  "version": "2.0.0",
+  "description": "Rich, themeable statusline for Claude Code — accurate context tracking, 5 themes, 3 layouts, token/cost/GitHub/skill display. Pure bash, zero deps.",
   "bin": {
     "skill-statusline": "bin/cli.js",
     "ccsl": "bin/cli.js"
   },
   "files": [
     "bin/",
+    "lib/",
+    "themes/",
+    "layouts/",
     "README.md",
     "LICENSE"
   ],
+  "scripts": {
+    "test": "bash test/run-all.sh"
+  },
   "keywords": [
     "claude-code",
     "statusline",
@@ -21,7 +27,10 @@
     "ai-coding",
     "developer-tools",
     "terminal",
-    "prompt"
+    "prompt",
+    "themes",
+    "context-window",
+    "token-tracking"
   ],
   "author": {
     "name": "Anit Chaudhary",
@@ -30,11 +39,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/AnitChaudhry/claude-code-statusline.git"
+    "url": "git+https://github.com/AnitChaudhry/skill-statusline.git"
   },
   "homepage": "https://skills.thinqmesh.com",
   "bugs": {
-    "url": "https://github.com/AnitChaudhry/claude-code-statusline/issues"
+    "url": "https://github.com/AnitChaudhry/skill-statusline/issues"
   },
   "engines": {
     "node": ">=16"

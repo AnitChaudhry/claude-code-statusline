@@ -1,36 +1,30 @@
-# Claude Code Statusline
+# Claude Code Statusline v2
 
-A rich, customizable statusline for Claude Code with colored legends, context progress bar, GitHub info, token tracking, and active skill display.
+Rich, themeable statusline for Claude Code with accurate context tracking, 5 themes, 3 layouts.
 
-## Layout
+## Quick Install
 
-```
- Model: Opus 4.6                      │  GitHub: User/Repo/master+~
- Skill: Edit                          │  Dir: Downloads/Project
- Tokens: 25k + 12k = 37k             │  Cost: $1.23
- Context: ████████████████████░░░░░░░░░░░░░░░░░░░░ 50%
+```bash
+npx skill-statusline install
 ```
 
-## Fields
+## Manual Install
 
-| Field   | Color            | Description |
-|---------|------------------|-------------|
-| Model   | Purple           | Active model name and version |
-| GitHub  | White            | username/repo/branch with +~ dirty indicators |
-| Skill   | Pink             | Last tool used (Read, Write, Edit, Terminal, etc.) |
-| Dir     | Cyan             | Last 3 segments of working directory |
-| Tokens  | Yellow           | Input + Output = Total (e.g., 25k + 12k = 37k) |
-| Cost    | Green            | Session cost in USD |
-| Context | White/Orange/Red | 40-char progress bar (white ≤40%, orange 41-75%, red >75%) |
-
-## Installation
-
-1. Copy `statusline-command.sh` to `~/.claude/`:
+1. Copy files to `~/.claude/`:
    ```bash
-   cp statusline-command.sh ~/.claude/statusline-command.sh
+   mkdir -p ~/.claude/statusline/{themes,layouts}
+   cp lib/*.sh ~/.claude/statusline/
+   cp themes/*.sh ~/.claude/statusline/themes/
+   cp layouts/*.sh ~/.claude/statusline/layouts/
+   cp bin/statusline.sh ~/.claude/statusline-command.sh
    ```
 
-2. Add to `~/.claude/settings.json`:
+2. Create config at `~/.claude/statusline-config.json`:
+   ```json
+   {"version":2,"theme":"default","layout":"standard","options":{}}
+   ```
+
+3. Add to `~/.claude/settings.json`:
    ```json
    {
      "statusLine": {
@@ -40,10 +34,22 @@ A rich, customizable statusline for Claude Code with colored legends, context pr
    }
    ```
 
-3. Restart Claude Code.
+4. Restart Claude Code.
 
-## Requirements
+## Change Theme
 
-- Git Bash or any bash shell (no `jq` required — uses grep/sed/awk)
-- Git (for GitHub field)
-- Works on Windows, macOS, Linux
+```bash
+ccsl theme set nord
+```
+
+## Change Layout
+
+```bash
+ccsl layout set full
+```
+
+## Diagnose Issues
+
+```bash
+ccsl doctor
+```
