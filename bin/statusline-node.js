@@ -129,7 +129,7 @@ function render(data) {
   let out = '';
   out += ' ' + rpad(`${actClr}Action:${RST} ${actClr}${activity}${RST}`, C1) + S + `${WHITE}Git:${RST} ${WHITE}${gitInfo}${RST}\n`;
   out += ' ' + rpad(`${PURPLE}Model:${RST} ${PURPLE}${BOLD}${model}${RST}`, C1) + S + `${CYAN}Dir:${RST} ${CYAN}${dir}${RST}\n`;
-  out += ' ' + rpad(`${YELLOW}Tokens:${RST} ${YELLOW}${tokIn} in + ${tokOut} out = ${BOLD}${tokTotal}${RST}`, C1) + S + `${GREEN}Cost:${RST} ${GREEN}${cost}${RST}\n`;
+  out += ' ' + rpad(`${YELLOW}Tokens:${RST} ${YELLOW}${tokIn} ${WHITE}in${RST} ${YELLOW}+ ${tokOut} ${WHITE}out${RST} ${YELLOW}= ${BOLD}${tokTotal}${RST}`, C1) + S + `${GREEN}Cost:${RST} ${GREEN}${cost}${RST}\n`;
   out += ' ' + rpad(`${BLUE}Session:${RST} ${BLUE}${duration}${RST}`, C1) + S + `${ctxClr}Context:${RST} ${bar} ${ctxClr}${pct}%${RST}`;
 
   process.stdout.write(out);
