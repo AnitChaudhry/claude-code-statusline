@@ -9,7 +9,7 @@ const readline = require('readline');
 const args = process.argv.slice(2);
 const command = args[0];
 const subcommand = args[1];
-const VERSION = '2.2.1';
+const VERSION = '2.2.2';
 
 const PKG_DIR = path.resolve(__dirname, '..');
 const HOME = os.homedir();
@@ -352,13 +352,21 @@ async function install() {
   writeConfig(config);
   success(`Config: theme=${CYN}${config.theme}${R}, layout=${CYN}${config.layout}${R}`);
 
-  // Update settings.json
+  // Update settings.json — use absolute paths on Windows to avoid WSL bash conflict
   const settings = readSettings();
-  if (!settings.statusLine) {
-    settings.statusLine = {
-      type: 'command',
-      command: 'bash ~/.claude/statusline-command.sh'
-    };
+  if (!settings.statusLine || settings.statusLine.command === 'bash ~/.claude/statusline-command.sh') {
+    const isWin = process.platform === 'win32';
+    let cmd;
+    if (isWin) {
+      // Windows has WSL bash at C:\Windows\System32\bash.exe which resolves ~ to /root/
+      // Must use Git Bash explicitly with absolute Windows paths
+      const gitBash = 'C:\\\\Program Files\\\\Git\\\\usr\\\\bin\\\\bash.exe';
+      const script = SCRIPT_DEST.replace(/\//g, '\\\\');
+      cmd = `"${gitBash}" "${script}"`;
+    } else {
+      cmd = 'bash ~/.claude/statusline-command.sh';
+    }
+    settings.statusLine = { type: 'command', command: cmd };
     writeSettings(settings);
     success(`${B}statusLine${R} config added to settings.json`);
   } else {
