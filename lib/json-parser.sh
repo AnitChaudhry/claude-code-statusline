@@ -1,71 +1,150 @@
 #!/usr/bin/env bash
-# skill-statusline v2 — JSON parser (no jq, pure grep/sed)
-# Handles both flat and nested Claude Code JSON structures
+# skill-statusline v2 — JSON parser (no jq, single awk pass)
+# Extracts ALL needed fields in one pass for speed on Windows/Git Bash
 
-# ── Flat parsers (v1 compat fallback) ──
+# ── Bulk parser: extract all fields at once ──
+# Sets SL_J_* variables for all known fields
+# This avoids spawning 100+ subshells (grep|sed|head per field)
+sl_parse_json() {
+  eval "$(echo "$input" | awk '
+  BEGIN { FS="" }
+  {
+    s = s $0
+  }
+  END {
+    # Helper: extract "key":value from a string
+    # For strings: "key":"value"
+    # For numbers: "key":number
 
-# Extract a quoted string value: json_val "key" → value
+    # Top-level strings
+    extract_str(s, "cwd")
+    extract_str(s, "version")
+    extract_str(s, "session_id")
+
+    # model object
+    extract_nested_str(s, "model", "id")
+    extract_nested_str(s, "model", "display_name")
+
+    # workspace object
+    extract_nested_str(s, "workspace", "current_dir")
+    extract_nested_str(s, "workspace", "project_dir")
+
+    # cost object
+    extract_nested_num(s, "cost", "total_cost_usd")
+    extract_nested_num(s, "cost", "total_duration_ms")
+    extract_nested_num(s, "cost", "total_api_duration_ms")
+    extract_nested_num(s, "cost", "total_lines_added")
+    extract_nested_num(s, "cost", "total_lines_removed")
+
+    # context_window object
+    extract_nested_num(s, "context_window", "context_window_size")
+    extract_nested_num(s, "context_window", "used_percentage")
+    extract_nested_num(s, "context_window", "remaining_percentage")
+    extract_nested_num(s, "context_window", "total_input_tokens")
+    extract_nested_num(s, "context_window", "total_output_tokens")
+
+    # context_window.current_usage (double-nested)
+    extract_deep_num(s, "context_window", "current_usage", "input_tokens")
+    extract_deep_num(s, "context_window", "current_usage", "output_tokens")
+    extract_deep_num(s, "context_window", "current_usage", "cache_creation_input_tokens")
+    extract_deep_num(s, "context_window", "current_usage", "cache_read_input_tokens")
+
+    # vim object
+    extract_nested_str(s, "vim", "mode")
+
+    # agent object
+    extract_nested_str(s, "agent", "name")
+
+    # boolean
+    if (match(s, /"exceeds_200k_tokens"[ \t]*:[ \t]*true/)) {
+      print "SL_J_exceeds_200k_tokens=true"
+    }
+  }
+
+  function varname(parts,    r, i) {
+    r = "SL_J"
+    for (i = 1; i <= length(parts); i++) {
+      r = r "_" parts[i]
+    }
+    return r
+  }
+
+  function extract_str(json, key,    pat, val, pos, rest) {
+    pat = "\"" key "\"[ \t]*:[ \t]*\""
+    if (match(json, pat)) {
+      rest = substr(json, RSTART + RLENGTH)
+      if (match(rest, /^[^"]*/)) {
+        val = substr(rest, 1, RLENGTH)
+        gsub(/'\''/, "'\''\\'\'''\''", val)
+        print "SL_J_" key "='\''" val "'\''"
+      }
+    }
+  }
+
+  function extract_nested_str(json, parent, key,    pat, block, rest) {
+    pat = "\"" parent "\"[ \t]*:[ \t]*\\{"
+    if (match(json, pat)) {
+      rest = substr(json, RSTART + RLENGTH)
+      # Find matching brace (simple: first })
+      if (match(rest, /[^}]*/)) {
+        block = substr(rest, 1, RLENGTH)
+        pat = "\"" key "\"[ \t]*:[ \t]*\""
+        if (match(block, pat)) {
+          rest = substr(block, RSTART + RLENGTH)
+          if (match(rest, /^[^"]*/)) {
+            val = substr(rest, 1, RLENGTH)
+            gsub(/'\''/, "'\''\\'\'''\''", val)
+            print "SL_J_" parent "_" key "='\''" val "'\''"
+          }
+        }
+      }
+    }
+  }
+
+  function extract_nested_num(json, parent, key,    pat, block, rest, val) {
+    pat = "\"" parent "\"[ \t]*:[ \t]*\\{"
+    if (match(json, pat)) {
+      rest = substr(json, RSTART + RLENGTH)
+      # For nested nums, search the full remainder (handles double-nested too)
+      block = rest
+      pat = "\"" key "\"[ \t]*:[ \t]*"
+      if (match(block, pat)) {
+        rest = substr(block, RSTART + RLENGTH)
+        if (match(rest, /^[0-9.]+/)) {
+          val = substr(rest, 1, RLENGTH)
+          print "SL_J_" parent "_" key "=" val
+        }
+      }
+    }
+  }
+
+  function extract_deep_num(json, p1, p2, key,    pat, outer, inner, rest, val) {
+    pat = "\"" p1 "\"[ \t]*:[ \t]*\\{"
+    if (match(json, pat)) {
+      outer = substr(json, RSTART + RLENGTH)
+      pat = "\"" p2 "\"[ \t]*:[ \t]*\\{"
+      if (match(outer, pat)) {
+        inner = substr(outer, RSTART + RLENGTH)
+        pat = "\"" key "\"[ \t]*:[ \t]*"
+        if (match(inner, pat)) {
+          rest = substr(inner, RSTART + RLENGTH)
+          if (match(rest, /^[0-9.]+/)) {
+            val = substr(rest, 1, RLENGTH)
+            print "SL_J_" p1 "_" p2 "_" key "=" val
+          }
+        }
+      }
+    }
+  }
+  ')"
+}
+
+# ── Legacy single-field parsers (for v1 fallback only) ──
+
 json_val() {
   echo "$input" | grep -o "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 | sed 's/.*:.*"\(.*\)"/\1/'
 }
 
-# Extract a numeric value: json_num "key" → number
 json_num() {
   echo "$input" | grep -o "\"$1\"[[:space:]]*:[[:space:]]*[0-9.]*" | head -1 | sed 's/.*:[[:space:]]*//'
-}
-
-# ── Nested parsers (v2 — handles Claude Code's real JSON structure) ──
-
-# Extract numeric from single-nested object: json_nested "context_window" "used_percentage"
-json_nested() {
-  local parent="$1" key="$2"
-  local block
-  block=$(echo "$input" | sed -n 's/.*"'"$parent"'"[[:space:]]*:[[:space:]]*{\([^}]*\)}.*/\1/p' | head -1)
-  if [ -n "$block" ]; then
-    echo "$block" | grep -o "\"$key\"[[:space:]]*:[[:space:]]*[0-9.]*" | head -1 | sed 's/.*:[[:space:]]*//'
-  fi
-}
-
-# Extract string from single-nested object: json_nested_val "model" "display_name"
-json_nested_val() {
-  local parent="$1" key="$2"
-  local block
-  block=$(echo "$input" | sed -n 's/.*"'"$parent"'"[[:space:]]*:[[:space:]]*{\([^}]*\)}.*/\1/p' | head -1)
-  if [ -n "$block" ]; then
-    echo "$block" | grep -o "\"$key\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 | sed 's/.*:.*"\(.*\)"/\1/'
-  fi
-}
-
-# Extract numeric from double-nested: json_deep "context_window" "current_usage" "input_tokens"
-# Handles: {"context_window":{..."current_usage":{"input_tokens":8500}...}}
-json_deep() {
-  local p1="$1" p2="$2" key="$3"
-  local outer inner
-  # Get everything inside the outer object (greedy — captures nested braces)
-  outer=$(echo "$input" | sed -n 's/.*"'"$p1"'"[[:space:]]*:[[:space:]]*{\(.*\)}/\1/p' | head -1)
-  if [ -n "$outer" ]; then
-    # Now extract the inner object
-    inner=$(echo "$outer" | sed -n 's/.*"'"$p2"'"[[:space:]]*:[[:space:]]*{\([^}]*\)}.*/\1/p' | head -1)
-    if [ -n "$inner" ]; then
-      echo "$inner" | grep -o "\"$key\"[[:space:]]*:[[:space:]]*[0-9.]*" | head -1 | sed 's/.*:[[:space:]]*//'
-    fi
-  fi
-}
-
-# Extract string from double-nested: json_deep_val "context_window" "current_usage" "mode"
-json_deep_val() {
-  local p1="$1" p2="$2" key="$3"
-  local outer inner
-  outer=$(echo "$input" | sed -n 's/.*"'"$p1"'"[[:space:]]*:[[:space:]]*{\(.*\)}/\1/p' | head -1)
-  if [ -n "$outer" ]; then
-    inner=$(echo "$outer" | sed -n 's/.*"'"$p2"'"[[:space:]]*:[[:space:]]*{\([^}]*\)}.*/\1/p' | head -1)
-    if [ -n "$inner" ]; then
-      echo "$inner" | grep -o "\"$key\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 | sed 's/.*:.*"\(.*\)"/\1/'
-    fi
-  fi
-}
-
-# Extract boolean: json_bool "exceeds_200k_tokens" → "true" or ""
-json_bool() {
-  echo "$input" | grep -o "\"$1\"[[:space:]]*:[[:space:]]*true" | head -1 | sed 's/.*:[[:space:]]*//'
 }

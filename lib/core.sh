@@ -1,37 +1,32 @@
 #!/usr/bin/env bash
-# skill-statusline v2.0 — Core engine
+# skill-statusline v2 — Core engine
 # Reads Claude Code JSON from stdin, computes all fields, renders via layout
 
 STATUSLINE_DIR="${HOME}/.claude/statusline"
 CONFIG_FILE="${HOME}/.claude/statusline-config.json"
 
-# ── 0. Global safety: kill entire script if it takes too long ──
-# Claude Code calls this on every refresh; a hang here freezes the terminal
-_sl_cleanup() { exit 0; }
-trap '_sl_cleanup' ALRM 2>/dev/null
-( sleep 3 && kill -ALRM $$ 2>/dev/null ) &
-_SL_WATCHDOG_PID=$!
-
-# ── 0b. Read stdin JSON (with timeout) ──
-# If stdin isn't piped properly, `cat` hangs forever — use read with timeout
-input=""
+# ── 0. Read stdin JSON first (before anything else) ──
+# If stdin isn't piped properly, `cat` hangs forever — guard against that
 if [ -t 0 ]; then
-  # stdin is a terminal (not piped) — no data to read, output nothing
-  kill "$_SL_WATCHDOG_PID" 2>/dev/null; wait "$_SL_WATCHDOG_PID" 2>/dev/null
   exit 0
 fi
-# Read all of stdin but bail after 2 seconds
-input=$(timeout 2 cat 2>/dev/null || cat 2>/dev/null)
+input=$(timeout 2 cat 2>/dev/null)
 if [ -z "$input" ]; then
-  kill "$_SL_WATCHDOG_PID" 2>/dev/null; wait "$_SL_WATCHDOG_PID" 2>/dev/null
   exit 0
 fi
+
+# Note: no global watchdog — individual timeouts on stdin (2s), git (2s),
+# and tput (1s) protect against hangs without background process issues
 
 # ── 1. Source modules ──
 source "${STATUSLINE_DIR}/json-parser.sh"
 source "${STATUSLINE_DIR}/helpers.sh"
 
-# ── 2. Load config ──
+# ── 2. Parse ALL JSON in one awk pass ──
+# This sets SL_J_* variables — avoids spawning 100+ subshells
+sl_parse_json
+
+# ── 3. Load config (using simple grep — much faster than multiple json calls) ──
 active_theme="default"
 active_layout="standard"
 cfg_warn_threshold=85
@@ -62,7 +57,7 @@ fi
 [ -n "$STATUSLINE_THEME_OVERRIDE" ] && active_theme="$STATUSLINE_THEME_OVERRIDE"
 [ -n "$STATUSLINE_LAYOUT_OVERRIDE" ] && active_layout="$STATUSLINE_LAYOUT_OVERRIDE"
 
-# ── 3. Source theme ──
+# ── 4. Source theme ──
 theme_file="${STATUSLINE_DIR}/themes/${active_theme}.sh"
 if [ -f "$theme_file" ]; then
   source "$theme_file"
@@ -70,7 +65,7 @@ else
   source "${STATUSLINE_DIR}/themes/default.sh"
 fi
 
-# ── 4. Terminal width detection (with timeout) ──
+# ── 5. Terminal width detection (with timeout) ──
 SL_TERM_WIDTH=${COLUMNS:-0}
 if [ "$SL_TERM_WIDTH" -eq 0 ] 2>/dev/null; then
   _tw=$(timeout 1 tput cols 2>/dev/null || echo "")
@@ -95,14 +90,13 @@ elif [ "$SL_TERM_WIDTH" -lt 70 ]; then
   BAR_WIDTH=20
 fi
 
-# ── 5. Initialize cache ──
+# ── 6. Initialize cache ──
 _sl_cache_init
 
-# ── 6. Parse ALL JSON fields ──
+# ── 7. Map parsed JSON vars to display vars ──
 
-# --- 6a. Directory ---
-SL_CWD=$(json_nested_val "workspace" "current_dir")
-[ -z "$SL_CWD" ] && SL_CWD=$(json_val "cwd")
+# --- Directory ---
+SL_CWD="${SL_J_workspace_current_dir:-$SL_J_cwd}"
 if [ -z "$SL_CWD" ]; then
   SL_DIR="~"
   clean_cwd=""
@@ -112,14 +106,9 @@ else
   [ -z "$SL_DIR" ] && SL_DIR="~"
 fi
 
-# --- 6b. Model ---
-SL_MODEL_DISPLAY=$(json_nested_val "model" "display_name")
-SL_MODEL_ID=$(json_nested_val "model" "id")
-# Flat fallback
-[ -z "$SL_MODEL_DISPLAY" ] && SL_MODEL_DISPLAY=$(json_val "display_name")
-[ -z "$SL_MODEL_ID" ] && SL_MODEL_ID=$(json_val "id")
-[ -z "$SL_MODEL_DISPLAY" ] && SL_MODEL_DISPLAY="unknown"
-
+# --- Model ---
+SL_MODEL_DISPLAY="${SL_J_model_display_name:-unknown}"
+SL_MODEL_ID="${SL_J_model_id}"
 model_ver=""
 if [ -n "$SL_MODEL_ID" ]; then
   model_ver=$(echo "$SL_MODEL_ID" | sed -n 's/.*-\([0-9]*\)-\([0-9]*\)$/\1.\2/p')
@@ -130,37 +119,29 @@ else
   SL_MODEL="$SL_MODEL_DISPLAY"
 fi
 
-# --- 6c. Context — ACCURATE computation from current_usage ---
-ctx_size=$(json_nested "context_window" "context_window_size")
-cur_input=$(json_deep "context_window" "current_usage" "input_tokens")
-cur_output=$(json_deep "context_window" "current_usage" "output_tokens")
-cur_cache_create=$(json_deep "context_window" "current_usage" "cache_creation_input_tokens")
-cur_cache_read=$(json_deep "context_window" "current_usage" "cache_read_input_tokens")
-
-[ -z "$ctx_size" ] && ctx_size=200000
-[ -z "$cur_input" ] && cur_input=0
-[ -z "$cur_output" ] && cur_output=0
-[ -z "$cur_cache_create" ] && cur_cache_create=0
-[ -z "$cur_cache_read" ] && cur_cache_read=0
+# --- Context — ACCURATE computation from current_usage ---
+ctx_size="${SL_J_context_window_context_window_size:-200000}"
+cur_input="${SL_J_context_window_current_usage_input_tokens:-0}"
+cur_output="${SL_J_context_window_current_usage_output_tokens:-0}"
+cur_cache_create="${SL_J_context_window_current_usage_cache_creation_input_tokens:-0}"
+cur_cache_read="${SL_J_context_window_current_usage_cache_read_input_tokens:-0}"
 
 # Claude's formula: input + cache_creation + cache_read (output excluded from context %)
-ctx_used=$(awk -v a="$cur_input" -v b="$cur_cache_create" -v c="$cur_cache_read" \
-  'BEGIN { printf "%d", a + b + c }')
+ctx_used=$(( cur_input + cur_cache_create + cur_cache_read ))
 
 # Self-calculated percentage
 calc_pct=0
-if [ "$cur_input" -gt 0 ] 2>/dev/null; then
-  calc_pct=$(awk -v used="$ctx_used" -v total="$ctx_size" \
-    'BEGIN { if (total > 0) printf "%d", (used * 100) / total; else print 0 }')
+if [ "$cur_input" -gt 0 ] 2>/dev/null && [ "$ctx_size" -gt 0 ] 2>/dev/null; then
+  calc_pct=$(( ctx_used * 100 / ctx_size ))
 fi
 
 # Reported percentage as fallback
-reported_pct=$(json_nested "context_window" "used_percentage")
+reported_pct="${SL_J_context_window_used_percentage}"
 
 # Use self-calculated if we have current_usage data, else fallback
 if [ "$cur_input" -gt 0 ] 2>/dev/null; then
   SL_CTX_PCT="$calc_pct"
-elif [ -n "$reported_pct" ] && [ "$reported_pct" != "null" ]; then
+elif [ -n "$reported_pct" ]; then
   SL_CTX_PCT=$(echo "$reported_pct" | cut -d. -f1)
 else
   SL_CTX_PCT=0
@@ -197,7 +178,7 @@ elif [ "$SL_CTX_PCT" -ge "$cfg_warn_threshold" ] 2>/dev/null; then
   SL_COMPACT_WARNING=" ${CLR_CTX_HIGH}${SL_CTX_REMAINING}% left${CLR_RST}"
 fi
 
-# --- 6d. GitHub (with caching + timeouts) ---
+# --- GitHub (with caching + timeouts) ---
 SL_BRANCH="no-git"
 SL_GIT_DIRTY=""
 SL_GITHUB=""
@@ -231,34 +212,24 @@ else
   SL_GITHUB="$SL_BRANCH"
 fi
 
-# --- 6e. Cost ---
-cost_raw=$(json_nested "cost" "total_cost_usd")
-[ -z "$cost_raw" ] && cost_raw=$(json_num "total_cost_usd")
+# --- Cost ---
+cost_raw="${SL_J_cost_total_cost_usd:-0}"
 if [ -z "$cost_raw" ] || [ "$cost_raw" = "0" ]; then
   SL_COST='$0.00'
 else
   SL_COST=$(awk -v c="$cost_raw" 'BEGIN { if (c < 0.01) printf "$%.4f", c; else printf "$%.2f", c }')
 fi
 
-# --- 6f. Tokens (window vs cumulative) ---
-# Current window tokens (what's actually loaded — accurate)
-[ -z "$cur_input" ] && cur_input=0
-[ -z "$cur_output" ] && cur_output=0
+# --- Tokens (window vs cumulative) ---
 SL_TOKENS_WIN_IN=$(fmt_tok "$cur_input")
 SL_TOKENS_WIN_OUT=$(fmt_tok "$cur_output")
 
-# Cumulative session tokens (grows forever, for reference)
-cum_input=$(json_nested "context_window" "total_input_tokens")
-cum_output=$(json_nested "context_window" "total_output_tokens")
-# Flat fallback
-[ -z "$cum_input" ] && cum_input=$(json_num "total_input_tokens")
-[ -z "$cum_output" ] && cum_output=$(json_num "total_output_tokens")
-[ -z "$cum_input" ] && cum_input=0
-[ -z "$cum_output" ] && cum_output=0
+cum_input="${SL_J_context_window_total_input_tokens:-0}"
+cum_output="${SL_J_context_window_total_output_tokens:-0}"
 SL_TOKENS_CUM_IN=$(fmt_tok "$cum_input")
 SL_TOKENS_CUM_OUT=$(fmt_tok "$cum_output")
 
-# --- 6g. Skill detection (with caching — longer TTL to avoid I/O thrashing) ---
+# --- Skill detection (with caching) ---
 SL_SKILL="Idle"
 
 _detect_skill() {
@@ -269,7 +240,6 @@ _detect_skill() {
     proj_hash=$(echo "$search_path" | sed 's|^/\([a-zA-Z]\)/|\U\1--|; s|^[A-Z]:/|&|; s|:/|--|; s|/|-|g')
     proj_dir="$HOME/.claude/projects/${proj_hash}"
     if [ -d "$proj_dir" ]; then
-      # Use ls with head to avoid sorting huge file lists
       tpath=$(ls -t "$proj_dir"/*.jsonl 2>/dev/null | head -1)
       [ -n "$tpath" ] && break
     fi
@@ -278,26 +248,11 @@ _detect_skill() {
 
   if [ -n "$tpath" ] && [ -f "$tpath" ]; then
     local last_tool
-    # Only read the last 50 lines — enough to find the most recent tool_use
     last_tool=$(tail -50 "$tpath" 2>/dev/null | grep -o '"type":"tool_use","id":"[^"]*","name":"[^"]*"' | tail -1 | sed 's/.*"name":"\([^"]*\)".*/\1/')
 
     if [ -n "$last_tool" ]; then
       case "$last_tool" in
-        Task)
-          # Lightweight agent count — check last 50 lines only
-          local agent_count
-          agent_count=$(tail -50 "$tpath" 2>/dev/null | grep -c '"type":"tool_use","id":"[^"]*","name":"Task"')
-          if [ "$agent_count" -gt 1 ]; then
-            echo "${agent_count} Agents"
-          else
-            local agent_desc
-            agent_desc=$(tail -50 "$tpath" 2>/dev/null | grep -o '"description":"[^"]*"' | tail -1 | sed 's/"description":"//;s/"$//')
-            if [ -n "$agent_desc" ]; then
-              echo "Agent($(echo "$agent_desc" | cut -c1-20))"
-            else
-              echo "Agent"
-            fi
-          fi ;;
+        Task)            echo "Agent" ;;
         Read)            echo "Read" ;;
         Write)           echo "Write" ;;
         Edit)            echo "Edit" ;;
@@ -313,10 +268,6 @@ _detect_skill() {
         ExitPlanMode)    echo "Plan Ready" ;;
         TaskCreate)      echo "Task Create" ;;
         TaskUpdate)      echo "Task Update" ;;
-        TaskGet)         echo "Task Get" ;;
-        TaskList)        echo "Task List" ;;
-        TaskStop)        echo "Task Stop" ;;
-        TaskOutput)      echo "Task Output" ;;
         NotebookEdit)    echo "Notebook" ;;
         *)               echo "$last_tool" ;;
       esac
@@ -324,76 +275,47 @@ _detect_skill() {
     fi
   fi
 
-  # Fallback: check .ccs/task.md
-  local task_file="${cwd}/.ccs/task.md"
-  if [ -f "$task_file" ]; then
-    local last_skill
-    last_skill=$(grep -oE '/ccs-[a-z]+' "$task_file" 2>/dev/null | tail -1)
-    [ -n "$last_skill" ] && { echo "$last_skill"; return; }
-  fi
-
   echo "Idle"
 }
 
 if [ -n "$clean_cwd" ]; then
-  # Cache skill detection for 5 seconds (was 2s — too frequent for heavy I/O)
   SL_SKILL=$(cache_get "skill-label" "_detect_skill '$clean_cwd'" 5)
 fi
 
-# --- 6h. New fields ---
-
-# Session duration
-dur_ms=$(json_nested "cost" "total_duration_ms")
-[ -z "$dur_ms" ] && dur_ms=0
+# --- Extra fields ---
+dur_ms="${SL_J_cost_total_duration_ms:-0}"
 SL_DURATION=$(fmt_duration "$dur_ms")
 
-# Lines changed
-SL_LINES_ADDED=$(json_nested "cost" "total_lines_added")
-SL_LINES_REMOVED=$(json_nested "cost" "total_lines_removed")
-[ -z "$SL_LINES_ADDED" ] && SL_LINES_ADDED=0
-[ -z "$SL_LINES_REMOVED" ] && SL_LINES_REMOVED=0
+SL_LINES_ADDED="${SL_J_cost_total_lines_added:-0}"
+SL_LINES_REMOVED="${SL_J_cost_total_lines_removed:-0}"
 
-# API duration
-api_ms=$(json_nested "cost" "total_api_duration_ms")
-[ -z "$api_ms" ] && api_ms=0
+api_ms="${SL_J_cost_total_api_duration_ms:-0}"
 SL_API_DURATION=$(fmt_duration "$api_ms")
 
-# Vim mode (absent when vim is off)
 SL_VIM_MODE=""
-if [ "$cfg_show_vim" = "true" ]; then
-  SL_VIM_MODE=$(json_nested_val "vim" "mode")
-fi
+[ "$cfg_show_vim" = "true" ] && SL_VIM_MODE="${SL_J_vim_mode}"
 
-# Agent name (absent when not in agent mode)
 SL_AGENT_NAME=""
-if [ "$cfg_show_agent" = "true" ]; then
-  SL_AGENT_NAME=$(json_nested_val "agent" "name")
-fi
+[ "$cfg_show_agent" = "true" ] && SL_AGENT_NAME="${SL_J_agent_name}"
 
-# Cache stats (formatted)
 SL_CACHE_CREATE=$(fmt_tok "$cur_cache_create")
 SL_CACHE_READ=$(fmt_tok "$cur_cache_read")
 
-# Burn rate (cost per minute)
 SL_BURN_RATE=""
 if [ "$cfg_show_burn_rate" = "true" ] && [ "$dur_ms" -gt 60000 ] 2>/dev/null; then
   SL_BURN_RATE=$(awk -v cost="$cost_raw" -v ms="$dur_ms" \
     'BEGIN { if (ms > 0 && cost+0 > 0) { rate = cost / (ms / 60000); printf "$%.2f/m", rate } }')
 fi
 
-# Exceeds 200k flag
-SL_EXCEEDS_200K=""
-[ -n "$(json_bool "exceeds_200k_tokens")" ] && SL_EXCEEDS_200K="true"
+SL_EXCEEDS_200K="${SL_J_exceeds_200k_tokens}"
+SL_VERSION="${SL_J_version}"
 
-# Version
-SL_VERSION=$(json_val "version")
-
-# ── 7. Dynamic column widths ──
+# ── 8. Dynamic column widths ──
 SL_C1=$(( SL_TERM_WIDTH / 2 - 4 ))
 [ "$SL_C1" -lt 25 ] && SL_C1=25
 [ "$SL_C1" -gt 42 ] && SL_C1=42
 
-# ── 8. Source layout and render ──
+# ── 9. Source layout and render ──
 layout_file="${STATUSLINE_DIR}/layouts/${active_layout}.sh"
 if [ -f "$layout_file" ]; then
   source "$layout_file"
@@ -403,6 +325,3 @@ fi
 
 render_layout
 
-# ── 9. Cleanup watchdog ──
-kill "$_SL_WATCHDOG_PID" 2>/dev/null
-wait "$_SL_WATCHDOG_PID" 2>/dev/null

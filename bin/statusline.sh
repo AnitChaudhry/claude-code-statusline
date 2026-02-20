@@ -12,20 +12,12 @@ fi
 # ── v1 fallback (inline legacy script) ──
 # This runs if only statusline-command.sh was copied without the statusline/ directory
 
-# Safety: kill script after 3 seconds to prevent hangs
-_sl_cleanup() { exit 0; }
-trap '_sl_cleanup' ALRM 2>/dev/null
-( sleep 3 && kill -ALRM $$ 2>/dev/null ) &
-_SL_WD_PID=$!
-
 # Read stdin with protection against missing pipe
 if [ -t 0 ]; then
-  kill "$_SL_WD_PID" 2>/dev/null; wait "$_SL_WD_PID" 2>/dev/null
   exit 0
 fi
-input=$(timeout 2 cat 2>/dev/null || cat 2>/dev/null)
+input=$(timeout 2 cat 2>/dev/null)
 if [ -z "$input" ]; then
-  kill "$_SL_WD_PID" 2>/dev/null; wait "$_SL_WD_PID" 2>/dev/null
   exit 0
 fi
 
@@ -133,7 +125,3 @@ printf ' '; rpad "${PINK}Skill:${RST} ${PINK}${skill_label}${RST}" "$C1"; printf
 printf ' '; rpad "${PURPLE}Model:${RST} ${PURPLE}${BOLD}${model_full}${RST}" "$C1"; printf '%b' "$S"; printf '%b\n' "${CYAN}Dir:${RST} ${CYAN}${dir_label}${RST}"
 printf ' '; rpad "${YELLOW}Tokens:${RST} ${YELLOW}${token_label}${RST}" "$C1"; printf '%b' "$S"; printf '%b\n' "${GREEN}Cost:${RST} ${GREEN}${cost_label}${RST}"
 printf ' '; printf '%b' "${CTX_CLR}Context:${RST} ${ctx_bar}"
-
-# Cleanup watchdog
-kill "$_SL_WD_PID" 2>/dev/null
-wait "$_SL_WD_PID" 2>/dev/null
