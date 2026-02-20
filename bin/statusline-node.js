@@ -14,26 +14,54 @@ try {
 function getActivity(transcriptPath) {
   try {
     const stat = fs.statSync(transcriptPath);
-    const readSize = Math.min(8192, stat.size);
+    const readSize = Math.min(16384, stat.size);
     const buf = Buffer.alloc(readSize);
     const fd = fs.openSync(transcriptPath, 'r');
     fs.readSync(fd, buf, 0, readSize, Math.max(0, stat.size - readSize));
     fs.closeSync(fd);
     const lines = buf.toString('utf8').split('\n').filter(l => l.trim());
-    // Walk backwards to find latest tool_use or activity
     for (let i = lines.length - 1; i >= 0; i--) {
       try {
         const entry = JSON.parse(lines[i]);
         if (entry.type === 'assistant' && Array.isArray(entry.message?.content)) {
-          const tools = entry.message.content
-            .filter(c => c.type === 'tool_use')
-            .map(c => c.name);
-          if (tools.length) return tools[tools.length - 1];
+          const toolUses = entry.message.content.filter(c => c.type === 'tool_use');
+          if (toolUses.length) {
+            const last = toolUses[toolUses.length - 1];
+            const name = last.name;
+            const inp = last.input || {};
+            // Enrich with context for special tools
+            if (name === 'Task' && inp.subagent_type) {
+              const desc = inp.description ? ': ' + inp.description.slice(0, 25) : '';
+              return `Task(${inp.subagent_type}${desc})`;
+            }
+            if (name === 'Skill' && inp.skill) return `Skill(${inp.skill})`;
+            return name;
+          }
         }
       } catch (e) { continue; }
     }
   } catch (e) { /* ignore */ }
   return 'Idle';
+}
+
+function getGitInfo(projectDir) {
+  let branch = '', remote = '';
+  try {
+    const gitHead = fs.readFileSync(path.join(projectDir, '.git', 'HEAD'), 'utf8').trim();
+    branch = gitHead.startsWith('ref: refs/heads/') ? gitHead.slice(16) : gitHead.slice(0, 7);
+  } catch (e) { return 'no-git'; }
+  // Parse remote URL from .git/config
+  try {
+    const config = fs.readFileSync(path.join(projectDir, '.git', 'config'), 'utf8');
+    const urlMatch = config.match(/\[remote "origin"\][^[]*url\s*=\s*(.+)/);
+    if (urlMatch) {
+      const url = urlMatch[1].trim();
+      // Extract owner/repo from various URL formats
+      const ghMatch = url.match(/github\.com[:/]([^/]+)\/([^/.]+)/);
+      if (ghMatch) remote = ghMatch[1] + '/' + ghMatch[2];
+    }
+  } catch (e) { /* ignore */ }
+  return remote ? `${remote}:${branch}` : branch;
 }
 
 function render(data) {
@@ -53,18 +81,14 @@ function render(data) {
   const parts = cwd.split('/').filter(Boolean);
   const dir = parts.length > 3 ? parts.slice(-3).join('/') : parts.length > 0 ? parts.join('/') : '~';
 
-  // Git branch — read .git/HEAD directly (no subprocess, instant)
-  let branch = '';
-  try {
-    const projectDir = data.workspace?.project_dir || data.workspace?.current_dir || data.cwd || '';
-    const gitHead = fs.readFileSync(path.join(projectDir, '.git', 'HEAD'), 'utf8').trim();
-    branch = gitHead.startsWith('ref: refs/heads/') ? gitHead.slice(16) : gitHead.slice(0, 7);
-  } catch (e) { branch = 'no-git'; }
+  // Git — account/repo:branch from .git/HEAD + .git/config
+  const projectDir = data.workspace?.project_dir || data.workspace?.current_dir || data.cwd || '';
+  const gitInfo = getGitInfo(projectDir);
 
-  // Live activity — tail transcript JSONL for current tool/action
+  // Live activity — tail transcript for current tool/skill/agent/task
   const activity = getActivity(data.transcript_path);
 
-  // Context — use Claude's provided percentage (most accurate)
+  // Context — use Claude's provided percentage
   let pct = Math.floor(data.context_window?.used_percentage || 0);
   if (pct > 100) pct = 100;
   const ctxClr = pct > 90 ? RED : pct > 75 ? ORANGE : pct > 40 ? YELLOW : WHITE;
@@ -91,7 +115,7 @@ function render(data) {
   const duration = durMin > 0 ? `${durMin}m ${durSec}s` : `${durSec}s`;
 
   // Activity color — highlight when active
-  const actClr = activity === 'Idle' ? PINK : GREEN;
+  const actClr = activity === 'Idle' ? DIM : GREEN;
 
   // Separator + padding
   const S = `  ${SEP}\u2502${RST}  `;
@@ -103,7 +127,7 @@ function render(data) {
 
   // Output 4 rows
   let out = '';
-  out += ' ' + rpad(`${actClr}Action:${RST} ${actClr}${activity}${RST}`, C1) + S + `${WHITE}Git:${RST} ${WHITE}${branch}${RST}\n`;
+  out += ' ' + rpad(`${actClr}Action:${RST} ${actClr}${activity}${RST}`, C1) + S + `${WHITE}Git:${RST} ${WHITE}${gitInfo}${RST}\n`;
   out += ' ' + rpad(`${PURPLE}Model:${RST} ${PURPLE}${BOLD}${model}${RST}`, C1) + S + `${CYAN}Dir:${RST} ${CYAN}${dir}${RST}\n`;
   out += ' ' + rpad(`${YELLOW}Tokens:${RST} ${YELLOW}${tokIn} in + ${tokOut} out = ${BOLD}${tokTotal}${RST}`, C1) + S + `${GREEN}Cost:${RST} ${GREEN}${cost}${RST}\n`;
   out += ' ' + rpad(`${BLUE}Session:${RST} ${BLUE}${duration}${RST}`, C1) + S + `${ctxClr}Context:${RST} ${bar} ${ctxClr}${pct}%${RST}`;
