@@ -12,7 +12,22 @@ fi
 # ── v1 fallback (inline legacy script) ──
 # This runs if only statusline-command.sh was copied without the statusline/ directory
 
-input=$(cat)
+# Safety: kill script after 3 seconds to prevent hangs
+_sl_cleanup() { exit 0; }
+trap '_sl_cleanup' ALRM 2>/dev/null
+( sleep 3 && kill -ALRM $$ 2>/dev/null ) &
+_SL_WD_PID=$!
+
+# Read stdin with protection against missing pipe
+if [ -t 0 ]; then
+  kill "$_SL_WD_PID" 2>/dev/null; wait "$_SL_WD_PID" 2>/dev/null
+  exit 0
+fi
+input=$(timeout 2 cat 2>/dev/null || cat 2>/dev/null)
+if [ -z "$input" ]; then
+  kill "$_SL_WD_PID" 2>/dev/null; wait "$_SL_WD_PID" 2>/dev/null
+  exit 0
+fi
 
 json_val() {
   echo "$input" | grep -o "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 | sed 's/.*:.*"\(.*\)"/\1/'
@@ -66,16 +81,16 @@ ctx_bar="${CTX_CLR}${bar_filled}${RST}${DIM_BAR}${bar_empty}${RST} ${CTX_CLR}${p
 
 branch="no-git"; gh_user=""; gh_repo=""; git_dirty=""
 if [ -n "$clean_cwd" ]; then
-  branch=$(git --no-optional-locks -C "$clean_cwd" symbolic-ref --short HEAD 2>/dev/null)
-  [ -z "$branch" ] && branch=$(git --no-optional-locks -C "$clean_cwd" rev-parse --short HEAD 2>/dev/null)
+  branch=$(timeout 2 git --no-optional-locks -C "$clean_cwd" symbolic-ref --short HEAD 2>/dev/null)
+  [ -z "$branch" ] && branch=$(timeout 2 git --no-optional-locks -C "$clean_cwd" rev-parse --short HEAD 2>/dev/null)
   if [ -n "$branch" ]; then
-    remote_url=$(git --no-optional-locks -C "$clean_cwd" remote get-url origin 2>/dev/null)
+    remote_url=$(timeout 2 git --no-optional-locks -C "$clean_cwd" remote get-url origin 2>/dev/null)
     if [ -n "$remote_url" ]; then
       gh_user=$(echo "$remote_url" | sed 's|.*github\.com[:/]\([^/]*\)/.*|\1|'); [ "$gh_user" = "$remote_url" ] && gh_user=""
       gh_repo=$(echo "$remote_url" | sed 's|.*/\([^/]*\)\.git$|\1|; s|.*/\([^/]*\)$|\1|'); [ "$gh_repo" = "$remote_url" ] && gh_repo=""
     fi
-    git --no-optional-locks -C "$clean_cwd" diff --cached --quiet 2>/dev/null || git_dirty="${GREEN}+${RST}"
-    git --no-optional-locks -C "$clean_cwd" diff --quiet 2>/dev/null || git_dirty="${git_dirty}${YELLOW}~${RST}"
+    timeout 2 git --no-optional-locks -C "$clean_cwd" diff --cached --quiet 2>/dev/null || git_dirty="${GREEN}+${RST}"
+    timeout 2 git --no-optional-locks -C "$clean_cwd" diff --quiet 2>/dev/null || git_dirty="${git_dirty}${YELLOW}~${RST}"
   fi
   [ -z "$branch" ] && branch="no-git"
 fi
@@ -102,8 +117,7 @@ if [ -n "$clean_cwd" ]; then
     search_path=$(echo "$search_path" | sed 's|/[^/]*$||')
   done
   if [ -n "$tpath" ] && [ -f "$tpath" ]; then
-    recent_block=$(tail -200 "$tpath" 2>/dev/null)
-    last_tool=$(echo "$recent_block" | grep -o '"type":"tool_use","id":"[^"]*","name":"[^"]*"' | tail -1 | sed 's/.*"name":"\([^"]*\)".*/\1/')
+    last_tool=$(tail -50 "$tpath" 2>/dev/null | grep -o '"type":"tool_use","id":"[^"]*","name":"[^"]*"' | tail -1 | sed 's/.*"name":"\([^"]*\)".*/\1/')
     if [ -n "$last_tool" ]; then
       case "$last_tool" in
         Task) skill_label="Agent" ;; Read) skill_label="Read" ;; Write) skill_label="Write" ;;
@@ -119,3 +133,7 @@ printf ' '; rpad "${PINK}Skill:${RST} ${PINK}${skill_label}${RST}" "$C1"; printf
 printf ' '; rpad "${PURPLE}Model:${RST} ${PURPLE}${BOLD}${model_full}${RST}" "$C1"; printf '%b' "$S"; printf '%b\n' "${CYAN}Dir:${RST} ${CYAN}${dir_label}${RST}"
 printf ' '; rpad "${YELLOW}Tokens:${RST} ${YELLOW}${token_label}${RST}" "$C1"; printf '%b' "$S"; printf '%b\n' "${GREEN}Cost:${RST} ${GREEN}${cost_label}${RST}"
 printf ' '; printf '%b' "${CTX_CLR}Context:${RST} ${ctx_bar}"
+
+# Cleanup watchdog
+kill "$_SL_WD_PID" 2>/dev/null
+wait "$_SL_WD_PID" 2>/dev/null

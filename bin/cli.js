@@ -9,7 +9,7 @@ const readline = require('readline');
 const args = process.argv.slice(2);
 const command = args[0];
 const subcommand = args[1];
-const VERSION = '2.1.1';
+const VERSION = '2.2.0';
 
 const PKG_DIR = path.resolve(__dirname, '..');
 const HOME = os.homedir();

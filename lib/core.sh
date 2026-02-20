@@ -5,8 +5,27 @@
 STATUSLINE_DIR="${HOME}/.claude/statusline"
 CONFIG_FILE="${HOME}/.claude/statusline-config.json"
 
-# ── 0. Read stdin JSON ──
-input=$(cat)
+# ── 0. Global safety: kill entire script if it takes too long ──
+# Claude Code calls this on every refresh; a hang here freezes the terminal
+_sl_cleanup() { exit 0; }
+trap '_sl_cleanup' ALRM 2>/dev/null
+( sleep 3 && kill -ALRM $$ 2>/dev/null ) &
+_SL_WATCHDOG_PID=$!
+
+# ── 0b. Read stdin JSON (with timeout) ──
+# If stdin isn't piped properly, `cat` hangs forever — use read with timeout
+input=""
+if [ -t 0 ]; then
+  # stdin is a terminal (not piped) — no data to read, output nothing
+  kill "$_SL_WATCHDOG_PID" 2>/dev/null; wait "$_SL_WATCHDOG_PID" 2>/dev/null
+  exit 0
+fi
+# Read all of stdin but bail after 2 seconds
+input=$(timeout 2 cat 2>/dev/null || cat 2>/dev/null)
+if [ -z "$input" ]; then
+  kill "$_SL_WATCHDOG_PID" 2>/dev/null; wait "$_SL_WATCHDOG_PID" 2>/dev/null
+  exit 0
+fi
 
 # ── 1. Source modules ──
 source "${STATUSLINE_DIR}/json-parser.sh"
@@ -51,10 +70,10 @@ else
   source "${STATUSLINE_DIR}/themes/default.sh"
 fi
 
-# ── 4. Terminal width detection ──
+# ── 4. Terminal width detection (with timeout) ──
 SL_TERM_WIDTH=${COLUMNS:-0}
 if [ "$SL_TERM_WIDTH" -eq 0 ] 2>/dev/null; then
-  _tw=$(tput cols 2>/dev/null)
+  _tw=$(timeout 1 tput cols 2>/dev/null || echo "")
   [ -n "$_tw" ] && [ "$_tw" -gt 0 ] && SL_TERM_WIDTH="$_tw"
 fi
 [ "$SL_TERM_WIDTH" -eq 0 ] && SL_TERM_WIDTH=80
@@ -178,7 +197,7 @@ elif [ "$SL_CTX_PCT" -ge "$cfg_warn_threshold" ] 2>/dev/null; then
   SL_COMPACT_WARNING=" ${CLR_CTX_HIGH}${SL_CTX_REMAINING}% left${CLR_RST}"
 fi
 
-# --- 6d. GitHub (with caching) ---
+# --- 6d. GitHub (with caching + timeouts) ---
 SL_BRANCH="no-git"
 SL_GIT_DIRTY=""
 SL_GITHUB=""
@@ -186,11 +205,11 @@ gh_user=""
 gh_repo=""
 
 if [ -n "$clean_cwd" ]; then
-  SL_BRANCH=$(cache_get "git-branch" "git --no-optional-locks -C '$clean_cwd' symbolic-ref --short HEAD 2>/dev/null || git --no-optional-locks -C '$clean_cwd' rev-parse --short HEAD 2>/dev/null" 5)
+  SL_BRANCH=$(cache_get "git-branch" "timeout 2 git --no-optional-locks -C '$clean_cwd' symbolic-ref --short HEAD 2>/dev/null || timeout 2 git --no-optional-locks -C '$clean_cwd' rev-parse --short HEAD 2>/dev/null" 5)
   [ -z "$SL_BRANCH" ] && SL_BRANCH="no-git"
 
   if [ "$SL_BRANCH" != "no-git" ]; then
-    remote_url=$(cache_get "git-remote" "git --no-optional-locks -C '$clean_cwd' remote get-url origin" 10)
+    remote_url=$(cache_get "git-remote" "timeout 2 git --no-optional-locks -C '$clean_cwd' remote get-url origin" 10)
     if [ -n "$remote_url" ]; then
       gh_user=$(echo "$remote_url" | sed 's|.*github\.com[:/]\([^/]*\)/.*|\1|')
       [ "$gh_user" = "$remote_url" ] && gh_user=""
@@ -199,8 +218,8 @@ if [ -n "$clean_cwd" ]; then
     fi
 
     # Dirty check (shorter cache — changes more often)
-    _staged=$(cache_get "git-staged" "git --no-optional-locks -C '$clean_cwd' diff --cached --quiet 2>/dev/null && echo clean || echo dirty" 3)
-    _unstaged=$(cache_get "git-unstaged" "git --no-optional-locks -C '$clean_cwd' diff --quiet 2>/dev/null && echo clean || echo dirty" 3)
+    _staged=$(cache_get "git-staged" "timeout 2 git --no-optional-locks -C '$clean_cwd' diff --cached --quiet 2>/dev/null && echo clean || echo dirty" 3)
+    _unstaged=$(cache_get "git-unstaged" "timeout 2 git --no-optional-locks -C '$clean_cwd' diff --quiet 2>/dev/null && echo clean || echo dirty" 3)
     [ "$_staged" = "dirty" ] && SL_GIT_DIRTY="${CLR_GIT_STAGED}+${CLR_RST}"
     [ "$_unstaged" = "dirty" ] && SL_GIT_DIRTY="${SL_GIT_DIRTY}${CLR_GIT_UNSTAGED}~${CLR_RST}"
   fi
@@ -239,7 +258,7 @@ cum_output=$(json_nested "context_window" "total_output_tokens")
 SL_TOKENS_CUM_IN=$(fmt_tok "$cum_input")
 SL_TOKENS_CUM_OUT=$(fmt_tok "$cum_output")
 
-# --- 6g. Skill detection (with caching) ---
+# --- 6g. Skill detection (with caching — longer TTL to avoid I/O thrashing) ---
 SL_SKILL="Idle"
 
 _detect_skill() {
@@ -250,6 +269,7 @@ _detect_skill() {
     proj_hash=$(echo "$search_path" | sed 's|^/\([a-zA-Z]\)/|\U\1--|; s|^[A-Z]:/|&|; s|:/|--|; s|/|-|g')
     proj_dir="$HOME/.claude/projects/${proj_hash}"
     if [ -d "$proj_dir" ]; then
+      # Use ls with head to avoid sorting huge file lists
       tpath=$(ls -t "$proj_dir"/*.jsonl 2>/dev/null | head -1)
       [ -n "$tpath" ] && break
     fi
@@ -257,20 +277,21 @@ _detect_skill() {
   done
 
   if [ -n "$tpath" ] && [ -f "$tpath" ]; then
-    local recent_block last_tool
-    recent_block=$(tail -200 "$tpath" 2>/dev/null)
-    last_tool=$(echo "$recent_block" | grep -o '"type":"tool_use","id":"[^"]*","name":"[^"]*"' | tail -1 | sed 's/.*"name":"\([^"]*\)".*/\1/')
+    local last_tool
+    # Only read the last 50 lines — enough to find the most recent tool_use
+    last_tool=$(tail -50 "$tpath" 2>/dev/null | grep -o '"type":"tool_use","id":"[^"]*","name":"[^"]*"' | tail -1 | sed 's/.*"name":"\([^"]*\)".*/\1/')
 
     if [ -n "$last_tool" ]; then
       case "$last_tool" in
         Task)
+          # Lightweight agent count — check last 50 lines only
           local agent_count
-          agent_count=$(echo "$recent_block" | grep -c '"type":"tool_use","id":"[^"]*","name":"Task"')
+          agent_count=$(tail -50 "$tpath" 2>/dev/null | grep -c '"type":"tool_use","id":"[^"]*","name":"Task"')
           if [ "$agent_count" -gt 1 ]; then
             echo "${agent_count} Agents"
           else
             local agent_desc
-            agent_desc=$(echo "$recent_block" | grep -o '"description":"[^"]*"' | tail -1 | sed 's/"description":"//;s/"$//')
+            agent_desc=$(tail -50 "$tpath" 2>/dev/null | grep -o '"description":"[^"]*"' | tail -1 | sed 's/"description":"//;s/"$//')
             if [ -n "$agent_desc" ]; then
               echo "Agent($(echo "$agent_desc" | cut -c1-20))"
             else
@@ -315,7 +336,8 @@ _detect_skill() {
 }
 
 if [ -n "$clean_cwd" ]; then
-  SL_SKILL=$(cache_get "skill-label" "_detect_skill '$clean_cwd'" 2)
+  # Cache skill detection for 5 seconds (was 2s — too frequent for heavy I/O)
+  SL_SKILL=$(cache_get "skill-label" "_detect_skill '$clean_cwd'" 5)
 fi
 
 # --- 6h. New fields ---
@@ -380,3 +402,7 @@ else
 fi
 
 render_layout
+
+# ── 9. Cleanup watchdog ──
+kill "$_SL_WATCHDOG_PID" 2>/dev/null
+wait "$_SL_WATCHDOG_PID" 2>/dev/null

@@ -36,13 +36,56 @@ fmt_duration() {
   }'
 }
 
+# ── Run a command with a timeout (seconds) ──
+# Usage: run_with_timeout <seconds> <command...>
+# Returns empty string if timeout exceeded
+run_with_timeout() {
+  local secs="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$secs" "$@" 2>/dev/null
+  else
+    # Fallback: background + wait (POSIX-ish)
+    "$@" 2>/dev/null &
+    local pid=$!
+    local i=0
+    while [ $i -lt $(( secs * 10 )) ]; do
+      if ! kill -0 "$pid" 2>/dev/null; then
+        wait "$pid" 2>/dev/null
+        return $?
+      fi
+      sleep 0.1
+      i=$((i + 1))
+    done
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    return 124
+  fi
+}
+
 # ── Filesystem caching with TTL ──
 
 CACHE_DIR="/tmp/sl-cache-${USER:-unknown}"
 CACHE_TTL="${SL_CACHE_TTL:-5}"
 
+# Detect stat flavor once (not on every cache check)
+_SL_STAT_GNU=""
 _sl_cache_init() {
   [ -d "$CACHE_DIR" ] || mkdir -p "$CACHE_DIR" 2>/dev/null
+  # Detect stat syntax once and cache the result
+  if stat -c %Y "$CACHE_DIR" >/dev/null 2>&1; then
+    _SL_STAT_GNU="yes"
+  else
+    _SL_STAT_GNU="no"
+  fi
+}
+
+# Get file mtime using cached stat detection
+_sl_file_mtime() {
+  if [ "$_SL_STAT_GNU" = "yes" ]; then
+    stat -c %Y "$1" 2>/dev/null
+  else
+    stat -f %m "$1" 2>/dev/null
+  fi
 }
 
 # cache_get "key" "command" [ttl_seconds]
@@ -54,12 +97,7 @@ cache_get() {
   if [ -f "$f" ]; then
     local now mtime age
     now=$(date +%s)
-    # Cross-platform stat: Linux/Git Bash vs macOS
-    if stat -c %Y /dev/null >/dev/null 2>&1; then
-      mtime=$(stat -c %Y "$f" 2>/dev/null)
-    else
-      mtime=$(stat -f %m "$f" 2>/dev/null)
-    fi
+    mtime=$(_sl_file_mtime "$f")
     if [ -n "$mtime" ]; then
       age=$(( now - mtime ))
       if [ "$age" -lt "$ttl" ]; then
