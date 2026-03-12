@@ -1,8 +1,18 @@
 #!/usr/bin/env bash
-# skill-statusline v2.0 — Entry point
-# Delegates to modular v2 engine if installed, falls back to v1 inline
+# skill-statusline v2.4 — Entry point
+# On Windows: delegates to Node.js renderer (avoids Git Bash subprocess overhead)
+# On Unix: delegates to modular v2 bash engine
 
 STATUSLINE_DIR="${HOME}/.claude/statusline"
+NODE_RENDERER="${HOME}/.claude/statusline-node.js"
+
+# Windows detection: MSYS, MINGW, or CYGWIN environment (Git Bash)
+if [[ "$OSTYPE" == msys* ]] || [[ "$OSTYPE" == mingw* ]] || [[ "$OSTYPE" == cygwin* ]] || [[ -n "$MSYSTEM" ]]; then
+  # Use Node.js renderer — single process, no subprocess overhead
+  if [ -f "$NODE_RENDERER" ] && command -v node &>/dev/null; then
+    exec node "$NODE_RENDERER"
+  fi
+fi
 
 if [ -f "${STATUSLINE_DIR}/core.sh" ]; then
   # v2: modular engine with themes, layouts, accurate context

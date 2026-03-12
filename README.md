@@ -124,17 +124,17 @@ Stored in `~/.claude/statusline-config.json`:
 
 ## Architecture
 
-Two rendering engines — the installer picks the right one for your platform:
+Single entry point (`~/.claude/statusline-command.sh`) on all platforms. On Windows, it auto-delegates to the Node.js renderer:
 
-- **Windows**: Node.js renderer (`statusline-node.js`) — single process, no subprocess spawning, ~30-50ms
-- **macOS/Linux**: Bash engine (`core.sh`) — pure bash, zero dependencies, <50ms with caching
+- **Windows**: `statusline-command.sh` detects Git Bash/MSYS2 → exec `node statusline-node.js` (~30-50ms)
+- **macOS/Linux**: `statusline-command.sh` → exec `bash core.sh` (pure bash, <50ms with caching)
 
 Git Bash on Windows has ~50-100ms overhead *per subprocess spawn* (awk, sed, grep, git, date). A bash statusline spawning 10-20 subprocesses = 500-1000ms. The Node.js renderer eliminates this by doing everything in a single process.
 
 ```
 ~/.claude/
-  statusline-command.sh           # Bash entry point (macOS/Linux)
-  statusline-node.js              # Node.js renderer (Windows)
+  statusline-command.sh           # Entry point (all platforms)
+  statusline-node.js              # Node.js renderer (auto-used on Windows)
   statusline/
     core.sh                       # Bash engine: parse JSON, compute fields, render
     json-parser.sh                # Nested JSON extraction (no jq)

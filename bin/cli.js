@@ -9,7 +9,7 @@ const readline = require('readline');
 const args = process.argv.slice(2);
 const command = args[0];
 const subcommand = args[1];
-const VERSION = '2.4.1';
+const VERSION = '2.4.2';
 
 const PKG_DIR = path.resolve(__dirname, '..');
 const HOME = os.homedir();
@@ -114,12 +114,13 @@ function getClaudeMdSection() {
   const isWin = process.platform === 'win32';
   const howItWorks = isWin
     ? `### How It Works
-- \`~/.claude/settings.json\` → runs \`node ~/.claude/statusline-node.js\`
-- \`~/.claude/statusline-node.js\` → Node.js renderer (fast on Windows, no bash overhead)
+- \`~/.claude/settings.json\` → runs \`~/.claude/statusline-command.sh\`
+- \`~/.claude/statusline-command.sh\` → detects Windows, delegates to Node.js renderer
+- \`~/.claude/statusline-node.js\` → Node.js renderer (fast on Windows, no bash subprocess overhead)
 - \`~/.claude/statusline-config.json\` → user preferences (theme, layout, options)`
     : `### How It Works
-- \`~/.claude/settings.json\` → points to \`bash ~/.claude/statusline-command.sh\`
-- \`~/.claude/statusline-command.sh\` → entry point, delegates to v2 engine
+- \`~/.claude/settings.json\` → runs \`~/.claude/statusline-command.sh\`
+- \`~/.claude/statusline-command.sh\` → entry point, delegates to v2 bash engine
 - \`~/.claude/statusline/core.sh\` → v2 engine (themes, layouts, accurate context tracking)
 - \`~/.claude/statusline-config.json\` → user preferences (theme, layout, options)`;
 
@@ -375,27 +376,20 @@ async function install() {
   success(`Config: theme=${CYN}${config.theme}${R}, layout=${CYN}${config.layout}${R}`);
 
   // Update settings.json
+  // Use ~/.claude/statusline-command.sh on ALL platforms
+  // Claude Code on Windows runs commands through Git Bash, which resolves ~
+  // The bash script detects Windows and delegates to Node.js renderer automatically
   const settings = readSettings();
   const prevCmd = settings.statusLine?.command || '';
+  const expectedCmd = '~/.claude/statusline-command.sh';
   const needsUpdate = !settings.statusLine
-    || prevCmd === 'bash ~/.claude/statusline-command.sh'
-    || (isWin && prevCmd.includes('bash.exe'))
-    || (isWin && prevCmd.includes('\\\\'));
+    || prevCmd !== expectedCmd;
   if (needsUpdate) {
-    let cmd;
-    if (isWin) {
-      // Windows: use Node.js renderer directly — avoids Git Bash/MSYS2 overhead
-      // (~50-100ms per subprocess spawn in Git Bash vs single Node.js process)
-      const nodeScript = path.join(CLAUDE_DIR, 'statusline-node.js');
-      cmd = `node "${nodeScript.replace(/\\/g, '/')}"`;
-    } else {
-      cmd = 'bash ~/.claude/statusline-command.sh';
-    }
-    settings.statusLine = { type: 'command', command: cmd };
+    settings.statusLine = { type: 'command', command: expectedCmd };
     writeSettings(settings);
     success(`${B}statusLine${R} config added to settings.json`);
     if (isWin) {
-      info(`Using Node.js renderer (fast on Windows)`);
+      info(`Windows: auto-delegates to Node.js renderer (fast)`);
     }
   } else {
     success(`statusLine already configured in settings.json`);
@@ -436,10 +430,10 @@ async function install() {
   }
 
   blank();
+  bar(`Script:    ${R}${CYN}~/.claude/statusline-command.sh${R}`);
   if (isWin) {
-    bar(`Renderer:  ${R}${CYN}~/.claude/statusline-node.js${R} ${D}(Node.js)${R}`);
+    bar(`Renderer:  ${R}${CYN}~/.claude/statusline-node.js${R} ${D}(Node.js — auto on Windows)${R}`);
   } else {
-    bar(`Script:    ${R}${CYN}~/.claude/statusline-command.sh${R}`);
     bar(`Engine:    ${R}${CYN}~/.claude/statusline/core.sh${R}`);
   }
   bar(`Config:    ${R}${CYN}~/.claude/statusline-config.json${R}`);
