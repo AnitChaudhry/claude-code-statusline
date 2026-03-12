@@ -9,7 +9,7 @@ const readline = require('readline');
 const args = process.argv.slice(2);
 const command = args[0];
 const subcommand = args[1];
-const VERSION = '2.2.2';
+const VERSION = '2.4.0';
 
 const PKG_DIR = path.resolve(__dirname, '..');
 const HOME = os.homedir();
@@ -271,9 +271,16 @@ function installFiles() {
     copyDir(layoutsSrc, path.join(SL_DIR, 'layouts'));
   }
 
-  // Copy entry point
+  // Copy entry point (bash)
   const slSrc = path.join(PKG_DIR, 'bin', 'statusline.sh');
   fs.copyFileSync(slSrc, SCRIPT_DEST);
+
+  // Copy Node.js renderer (used on Windows for performance)
+  const nodeSrc = path.join(PKG_DIR, 'bin', 'statusline-node.js');
+  const nodeDest = path.join(CLAUDE_DIR, 'statusline-node.js');
+  if (fs.existsSync(nodeSrc)) {
+    fs.copyFileSync(nodeSrc, nodeDest);
+  }
 
   return true;
 }
@@ -352,23 +359,30 @@ async function install() {
   writeConfig(config);
   success(`Config: theme=${CYN}${config.theme}${R}, layout=${CYN}${config.layout}${R}`);
 
-  // Update settings.json — use absolute paths on Windows to avoid WSL bash conflict
+  // Update settings.json
   const settings = readSettings();
-  if (!settings.statusLine || settings.statusLine.command === 'bash ~/.claude/statusline-command.sh') {
-    const isWin = process.platform === 'win32';
+  const isWin = process.platform === 'win32';
+  const prevCmd = settings.statusLine?.command || '';
+  const needsUpdate = !settings.statusLine
+    || prevCmd === 'bash ~/.claude/statusline-command.sh'
+    || (isWin && prevCmd.includes('bash.exe'))
+    || (isWin && prevCmd.includes('\\\\'));
+  if (needsUpdate) {
     let cmd;
     if (isWin) {
-      // Windows has WSL bash at C:\Windows\System32\bash.exe which resolves ~ to /root/
-      // Must use Git Bash explicitly with absolute Windows paths
-      const gitBash = 'C:\\\\Program Files\\\\Git\\\\usr\\\\bin\\\\bash.exe';
-      const script = SCRIPT_DEST.replace(/\//g, '\\\\');
-      cmd = `"${gitBash}" "${script}"`;
+      // Windows: use Node.js renderer directly — avoids Git Bash/MSYS2 overhead
+      // (~50-100ms per subprocess spawn in Git Bash vs single Node.js process)
+      const nodeScript = path.join(CLAUDE_DIR, 'statusline-node.js');
+      cmd = `node "${nodeScript.replace(/\\/g, '/')}"`;
     } else {
       cmd = 'bash ~/.claude/statusline-command.sh';
     }
     settings.statusLine = { type: 'command', command: cmd };
     writeSettings(settings);
     success(`${B}statusLine${R} config added to settings.json`);
+    if (isWin) {
+      info(`Using Node.js renderer (fast on Windows)`);
+    }
   } else {
     success(`statusLine already configured in settings.json`);
   }
@@ -408,8 +422,12 @@ async function install() {
   }
 
   blank();
-  bar(`Script:    ${R}${CYN}~/.claude/statusline-command.sh${R}`);
-  bar(`Engine:    ${R}${CYN}~/.claude/statusline/core.sh${R}`);
+  if (isWin) {
+    bar(`Renderer:  ${R}${CYN}~/.claude/statusline-node.js${R} ${D}(Node.js)${R}`);
+  } else {
+    bar(`Script:    ${R}${CYN}~/.claude/statusline-command.sh${R}`);
+    bar(`Engine:    ${R}${CYN}~/.claude/statusline/core.sh${R}`);
+  }
   bar(`Config:    ${R}${CYN}~/.claude/statusline-config.json${R}`);
   bar(`Settings:  ${R}${CYN}~/.claude/settings.json${R}`);
   blank();
@@ -431,12 +449,17 @@ function uninstall() {
     success(`Removed ~/.claude/statusline/`);
   }
 
-  // Remove script
+  // Remove scripts
   if (fs.existsSync(SCRIPT_DEST)) {
     fs.unlinkSync(SCRIPT_DEST);
     success(`Removed ~/.claude/statusline-command.sh`);
   } else {
     warn(`statusline-command.sh not found`);
+  }
+  const nodeScript = path.join(CLAUDE_DIR, 'statusline-node.js');
+  if (fs.existsSync(nodeScript)) {
+    fs.unlinkSync(nodeScript);
+    success(`Removed ~/.claude/statusline-node.js`);
   }
 
   // Remove config
@@ -524,40 +547,53 @@ function preview() {
     agent: { name: 'code-reviewer' }
   });
 
-  // Check if v2 engine is installed
-  const coreFile = path.join(SL_DIR, 'core.sh');
-  let scriptPath;
-  if (fs.existsSync(coreFile)) {
-    scriptPath = coreFile;
-  } else if (fs.existsSync(SCRIPT_DEST)) {
-    scriptPath = SCRIPT_DEST;
+  const isWin = process.platform === 'win32';
+
+  // On Windows, prefer Node.js renderer for speed
+  const nodeRendererInstalled = path.join(CLAUDE_DIR, 'statusline-node.js');
+  const nodeRendererPkg = path.join(PKG_DIR, 'bin', 'statusline-node.js');
+  const nodeRenderer = fs.existsSync(nodeRendererInstalled) ? nodeRendererInstalled : nodeRendererPkg;
+
+  if (isWin || !fs.existsSync(path.join(SL_DIR, 'core.sh'))) {
+    // Use Node.js renderer
+    try {
+      const result = execSync(`node "${nodeRenderer.replace(/\\/g, '/')}"`, {
+        input: sampleJson,
+        encoding: 'utf8',
+        timeout: 5000
+      });
+      log('');
+      log(result);
+      log('');
+    } catch (e) {
+      warn(`Preview failed: ${e.message}`);
+    }
   } else {
-    // Use the package's own script
-    scriptPath = path.join(PKG_DIR, 'lib', 'core.sh');
-  }
+    // Unix: use bash engine with theme/layout overrides
+    const coreFile = path.join(SL_DIR, 'core.sh');
+    const scriptPath = fs.existsSync(coreFile) ? coreFile : SCRIPT_DEST;
 
-  const env = { ...process.env };
-  if (themeName) env.STATUSLINE_THEME_OVERRIDE = themeName;
-  if (layoutName) env.STATUSLINE_LAYOUT_OVERRIDE = layoutName;
+    const env = { ...process.env };
+    if (themeName) env.STATUSLINE_THEME_OVERRIDE = themeName;
+    if (layoutName) env.STATUSLINE_LAYOUT_OVERRIDE = layoutName;
 
-  // For preview with package's own files, set STATUSLINE_DIR
-  if (!fs.existsSync(path.join(SL_DIR, 'core.sh'))) {
-    // Point to package's own lib directory structure
-    env.HOME = PKG_DIR;
-  }
+    if (!fs.existsSync(path.join(SL_DIR, 'core.sh'))) {
+      env.HOME = PKG_DIR;
+    }
 
-  try {
-    const escaped = sampleJson.replace(/'/g, "'\\''");
-    const result = execSync(`printf '%s' '${escaped}' | bash "${scriptPath.replace(/\\/g, '/')}"`, {
-      encoding: 'utf8',
-      env,
-      timeout: 5000
-    });
-    log('');
-    log(result);
-    log('');
-  } catch (e) {
-    warn(`Preview failed: ${e.message}`);
+    try {
+      const escaped = sampleJson.replace(/'/g, "'\\''");
+      const result = execSync(`printf '%s' '${escaped}' | bash "${scriptPath.replace(/\\/g, '/')}"`, {
+        encoding: 'utf8',
+        env,
+        timeout: 5000
+      });
+      log('');
+      log(result);
+      log('');
+    } catch (e) {
+      warn(`Preview failed: ${e.message}`);
+    }
   }
 }
 
@@ -816,23 +852,55 @@ function doctor() {
     warn(`No config file (using defaults)`);
   }
 
-  // 9. Performance benchmark
+  // 9. Node.js renderer
+  const nodeRendererPath = path.join(CLAUDE_DIR, 'statusline-node.js');
+  if (fs.existsSync(nodeRendererPath)) {
+    success(`Node.js renderer installed (statusline-node.js)`);
+  } else if (process.platform === 'win32') {
+    fail(`Node.js renderer missing — required on Windows`);
+    info(`Run ${CYN}ccsl install${R} to fix`);
+    issues++;
+  } else {
+    bar(`Node.js renderer not installed (optional on Unix)`);
+  }
+
+  // 10. Performance benchmark
   blank();
   info(`${B}Performance benchmark${R}`);
   blank();
   try {
     const sampleJson = '{"model":{"id":"claude-opus-4-6","display_name":"Opus"},"workspace":{"current_dir":"/tmp"},"cost":{"total_cost_usd":0.5},"context_window":{"context_window_size":200000,"used_percentage":50,"current_usage":{"input_tokens":90000,"output_tokens":10000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}';
-    const target = fs.existsSync(coreFile) ? coreFile : SCRIPT_DEST;
-    if (target && fs.existsSync(target)) {
+
+    // Benchmark Node.js renderer
+    if (fs.existsSync(nodeRendererPath)) {
       const start = Date.now();
-      execSync(`printf '%s' '${sampleJson}' | bash "${target.replace(/\\/g, '/')}"`, {
+      execSync(`node "${nodeRendererPath.replace(/\\/g, '/')}"`, {
+        input: sampleJson,
         encoding: 'utf8',
         timeout: 10000
       });
       const elapsed = Date.now() - start;
       const color = elapsed < 50 ? GRN : elapsed < 100 ? YLW : RED;
       const label = elapsed < 50 ? 'excellent' : elapsed < 100 ? 'good' : 'slow';
-      log(`  ${GRAY}\u2502${R}  ${color}\u25CF${R} Execution: ${color}${B}${elapsed}ms${R} (${label}, target: <50ms)`);
+      log(`  ${GRAY}\u2502${R}  ${color}\u25CF${R} Node.js renderer: ${color}${B}${elapsed}ms${R} (${label})`);
+    }
+
+    // Benchmark bash engine (skip on Windows — known slow)
+    if (process.platform !== 'win32') {
+      const target = fs.existsSync(coreFile) ? coreFile : SCRIPT_DEST;
+      if (target && fs.existsSync(target)) {
+        const start = Date.now();
+        execSync(`printf '%s' '${sampleJson}' | bash "${target.replace(/\\/g, '/')}"`, {
+          encoding: 'utf8',
+          timeout: 10000
+        });
+        const elapsed = Date.now() - start;
+        const color = elapsed < 50 ? GRN : elapsed < 100 ? YLW : RED;
+        const label = elapsed < 50 ? 'excellent' : elapsed < 100 ? 'good' : 'slow';
+        log(`  ${GRAY}\u2502${R}  ${color}\u25CF${R} Bash engine: ${color}${B}${elapsed}ms${R} (${label})`);
+      }
+    } else {
+      bar(`Bash benchmark skipped (slow on Windows, using Node.js)`);
     }
   } catch (e) {
     fail(`Benchmark failed: ${e.message.substring(0, 50)}`);

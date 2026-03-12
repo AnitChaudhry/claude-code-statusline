@@ -1,6 +1,6 @@
 # skill-statusline
 
-Rich, themeable statusline for Claude Code with accurate context tracking, 5 color themes, 3 layout modes, and zero dependencies.
+Rich, themeable statusline for Claude Code with accurate context tracking, 5 color themes, 3 layout modes, and zero dependencies. Uses a fast Node.js renderer on Windows (no Git Bash overhead), pure bash on Unix.
 
 ## Install
 
@@ -124,13 +124,19 @@ Stored in `~/.claude/statusline-config.json`:
 
 ## Architecture
 
-Pure bash at runtime — zero dependencies. Node.js CLI is only for installation.
+Two rendering engines — the installer picks the right one for your platform:
+
+- **Windows**: Node.js renderer (`statusline-node.js`) — single process, no subprocess spawning, ~30-50ms
+- **macOS/Linux**: Bash engine (`core.sh`) — pure bash, zero dependencies, <50ms with caching
+
+Git Bash on Windows has ~50-100ms overhead *per subprocess spawn* (awk, sed, grep, git, date). A bash statusline spawning 10-20 subprocesses = 500-1000ms. The Node.js renderer eliminates this by doing everything in a single process.
 
 ```
 ~/.claude/
-  statusline-command.sh           # Entry point (called by Claude Code)
+  statusline-command.sh           # Bash entry point (macOS/Linux)
+  statusline-node.js              # Node.js renderer (Windows)
   statusline/
-    core.sh                       # Engine: parse JSON, compute fields, render
+    core.sh                       # Bash engine: parse JSON, compute fields, render
     json-parser.sh                # Nested JSON extraction (no jq)
     helpers.sh                    # Utilities + filesystem caching
     themes/{default,nord,...}.sh  # Color palettes
@@ -138,15 +144,13 @@ Pure bash at runtime — zero dependencies. Node.js CLI is only for installation
   statusline-config.json          # User preferences
 ```
 
-Performance: <50ms with caching, <100ms cold. Git and transcript reads are cached with configurable TTL.
-
 Terminal width is auto-detected — layouts gracefully degrade on narrow terminals.
 
 ## Requirements
 
-- Bash (Git Bash on Windows, or any Unix shell)
+- Node.js >=16 (installer + Windows renderer)
 - Git (for GitHub field)
-- Node.js >=16 (for installer only)
+- Bash (macOS/Linux runtime only — not needed on Windows)
 - Works on Windows, macOS, Linux
 
 ## Part of the Thinqmesh Skills Ecosystem
