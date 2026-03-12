@@ -1,6 +1,6 @@
 {
   "name": "skill-statusline",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "description": "Rich, themeable statusline for Claude Code — accurate context tracking, 5 themes, 3 layouts, token/cost/GitHub/skill display. Node.js renderer on Windows (no bash overhead), pure bash on Unix.",
   "bin": {
     "skill-statusline": "bin/cli.js",

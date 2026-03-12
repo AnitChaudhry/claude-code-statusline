@@ -9,7 +9,7 @@ const readline = require('readline');
 const args = process.argv.slice(2);
 const command = args[0];
 const subcommand = args[1];
-const VERSION = '2.4.0';
+const VERSION = '2.4.1';
 
 const PKG_DIR = path.resolve(__dirname, '..');
 const HOME = os.homedir();
@@ -110,16 +110,25 @@ function writeSettings(settings) {
 // instead of the built-in statusline-setup agent (which fails on Windows
 // and conflicts with our setup).
 
-const CLAUDE_MD_SECTION = `${CLAUDE_MD_START}
+function getClaudeMdSection() {
+  const isWin = process.platform === 'win32';
+  const howItWorks = isWin
+    ? `### How It Works
+- \`~/.claude/settings.json\` → runs \`node ~/.claude/statusline-node.js\`
+- \`~/.claude/statusline-node.js\` → Node.js renderer (fast on Windows, no bash overhead)
+- \`~/.claude/statusline-config.json\` → user preferences (theme, layout, options)`
+    : `### How It Works
+- \`~/.claude/settings.json\` → points to \`bash ~/.claude/statusline-command.sh\`
+- \`~/.claude/statusline-command.sh\` → entry point, delegates to v2 engine
+- \`~/.claude/statusline/core.sh\` → v2 engine (themes, layouts, accurate context tracking)
+- \`~/.claude/statusline-config.json\` → user preferences (theme, layout, options)`;
+
+  return `${CLAUDE_MD_START}
 ## Statusline — Managed by skill-statusline v2
 
 The Claude Code statusline is fully configured and managed by the \`skill-statusline\` npm package. Do NOT use the built-in \`statusline-setup\` agent for any statusline configuration — it is not compatible with this setup.
 
-### How It Works
-- \`~/.claude/settings.json\` → points to \`bash ~/.claude/statusline-command.sh\`
-- \`~/.claude/statusline-command.sh\` → entry point, delegates to v2 engine
-- \`~/.claude/statusline/core.sh\` → v2 engine (themes, layouts, accurate context tracking)
-- \`~/.claude/statusline-config.json\` → user preferences (theme, layout, options)
+${howItWorks}
 
 ### When the user asks about statusline configuration, use these CLI commands:
 
@@ -157,6 +166,7 @@ Users can also use these slash commands inside Claude Code:
 - All statusline changes are made via \`ccsl\` CLI commands (run in terminal) or \`/sls-*\` slash commands
 - Changes take effect on next Claude Code restart (or next statusline refresh for config changes)
 ${CLAUDE_MD_END}`;
+}
 
 function installClaudeMd() {
   let content = '';
@@ -171,7 +181,7 @@ function installClaudeMd() {
     }
   }
   // Append our section
-  content = content ? content + '\n\n' + CLAUDE_MD_SECTION + '\n' : CLAUDE_MD_SECTION + '\n';
+  content = content ? content + '\n\n' + getClaudeMdSection() + '\n' : getClaudeMdSection() + '\n';
   fs.writeFileSync(CLAUDE_MD_PATH, content);
 }
 
@@ -351,8 +361,13 @@ async function install() {
   }
 
   // Install files
+  const isWin = process.platform === 'win32';
   installFiles();
-  success(`${B}statusline/${R} directory installed to ~/.claude/`);
+  if (isWin) {
+    success(`${B}statusline-node.js${R} renderer installed to ~/.claude/`);
+  } else {
+    success(`${B}statusline/${R} engine installed to ~/.claude/`);
+  }
 
   // Write config
   if (!config.options) config.options = {};
@@ -361,7 +376,6 @@ async function install() {
 
   // Update settings.json
   const settings = readSettings();
-  const isWin = process.platform === 'win32';
   const prevCmd = settings.statusLine?.command || '';
   const needsUpdate = !settings.statusLine
     || prevCmd === 'bash ~/.claude/statusline-command.sh'
